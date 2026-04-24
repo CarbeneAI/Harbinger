@@ -56,10 +56,36 @@ const SEARCH_TOOL = {
 const MAX_TOOL_CALLS = 3;
 
 // ---------------------------------------------------------------------------
+// IOC context formatting
+// ---------------------------------------------------------------------------
+
+function formatIOCContext(iocs: IOC[]): string {
+  if (!iocs || iocs.length === 0) return '';
+
+  const lines = ['\n## Selected IOCs for Analysis\n'];
+
+  for (const ioc of iocs) {
+    lines.push(`### ${ioc.ioc_type.toUpperCase()}: ${ioc.value}`);
+    lines.push(`- **Type**: ${ioc.ioc_type}`);
+    lines.push(`- **Severity**: ${ioc.severity}`);
+    if (ioc.title) lines.push(`- **Title**: ${ioc.title}`);
+    if (ioc.description) lines.push(`- **Description**: ${ioc.description}`);
+    if (ioc.feed_name) lines.push(`- **Source Feed**: ${ioc.feed_name}`);
+    if (ioc.source_ref) lines.push(`- **Reference**: ${ioc.source_ref}`);
+    if (ioc.tags && ioc.tags.length > 0) lines.push(`- **Tags**: ${ioc.tags.join(', ')}`);
+    if (ioc.first_seen) lines.push(`- **First Seen**: ${new Date(ioc.first_seen).toISOString()}`);
+    if (ioc.last_seen) lines.push(`- **Last Seen**: ${new Date(ioc.last_seen).toISOString()}`);
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
 // System prompt
 // ---------------------------------------------------------------------------
 
-function buildSystemPrompt(): string {
+function buildSystemPrompt(iocContext?: IOC[]): string {
   return `You are a senior threat intelligence analyst helping security teams understand and act on threat data.
 
 Your expertise:
@@ -77,7 +103,9 @@ Your expertise:
 4. **What do I do next?** — Specific hunt queries, blocks, or detection rules
 5. **What should I watch for?** — Related IOCs, escalation indicators
 
-Use markdown formatting. Be direct and actionable.`;
+Use markdown formatting. Be direct and actionable.
+
+${iocContext ? formatIOCContext(iocContext) : ''}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -187,9 +215,10 @@ async function sendOllamaMessage(
   chatHistory: PAIChatMessage[],
   ollamaUrl: string,
   ollamaModel: string,
+  iocContext?: IOC[],
 ): Promise<PAIChatResponse> {
   try {
-    const systemPrompt = buildSystemPrompt();
+    const systemPrompt = buildSystemPrompt(iocContext);
 
     const messages = [
       { role: 'system', content: systemPrompt },
@@ -246,6 +275,8 @@ async function sendOllamaMessage(
 export async function sendChatMessage(
   userMessage: string,
   chatHistory: PAIChatMessage[],
+  iocContext?: IOC[],
+  sessionId?: string,
   provider: AIProvider = 'anthropic',
   ollamaUrl?: string,
   ollamaModel?: string,
@@ -262,6 +293,7 @@ export async function sendChatMessage(
       chatHistory,
       ollamaUrl ?? 'http://localhost:11434',
       ollamaModel,
+      iocContext,
     );
   }
 
@@ -270,7 +302,7 @@ export async function sendChatMessage(
     const apiKey = await getApiKey();
 
     const systemPrompt =
-      buildSystemPrompt() +
+      buildSystemPrompt(iocContext) +
       `\n\n## Tools Available\n\n` +
       `You have access to \`search_iocs\` to query the live threat intelligence database. ` +
       `Use it proactively to:\n` +
@@ -408,7 +440,7 @@ export async function generateThreatBrief(
   const contextMarkdown = lines.join('\n');
   const prompt = QUICK_PROMPTS.brief + '\n\n' + contextMarkdown;
 
-  const result = await sendChatMessage(prompt, [], provider, ollamaUrl, ollamaModel);
+  const result = await sendChatMessage(prompt, [], undefined, undefined, provider, ollamaUrl, ollamaModel);
 
   // Persist the brief if generation succeeded
   if (result.success && result.content) {
