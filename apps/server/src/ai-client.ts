@@ -53,7 +53,7 @@ const SEARCH_TOOL = {
   },
 };
 
-const MAX_TOOL_CALLS = 3;
+const MAX_TOOL_CALLS = 5;
 
 // ---------------------------------------------------------------------------
 // IOC context formatting
@@ -305,11 +305,13 @@ export async function sendChatMessage(
       buildSystemPrompt(iocContext) +
       `\n\n## Tools Available\n\n` +
       `You have access to \`search_iocs\` to query the live threat intelligence database. ` +
-      `Use it proactively to:\n` +
+      `Use it to:\n` +
       `- Find related IOCs by value, type, or feed\n` +
       `- Understand campaign scope by correlating indicators\n` +
       `- Verify whether an IOC is known and its confidence level\n\n` +
-      `When you search, briefly explain *why* you're searching so the analyst understands your reasoning.`;
+      `IMPORTANT: Search 1-2 times maximum, then provide your analysis. Do NOT search more than twice. ` +
+      `The IOC context is already provided above — use it as your primary data source and only search to find *related* indicators. ` +
+      `Always end with a complete written analysis, never end on a tool call.`;
 
     const messages: any[] = [
       ...chatHistory.map((m) => ({ role: m.role, content: m.content })),
