@@ -41,9 +41,14 @@ Click any IOC to see full context before asking the AI to analyze it.
 ![IOC Detail](images/ioc-detail.png)
 
 ### AI Analysis
-Structured threat analysis with actionable remediation steps and hunt queries.
+Structured threat analysis with campaign attribution, severity assessment, and infrastructure pattern detection.
 
 ![AI Analysis](images/ai-analysis.png)
+
+### Threat Brief
+One-click AI-generated intelligence brief summarizing critical threats, active campaigns, and recommended actions.
+
+![Threat Brief](images/threat-brief.png)
 
 ## Tech Stack
 
