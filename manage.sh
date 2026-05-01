@@ -1,10 +1,28 @@
 #!/bin/bash
 # Harbinger Threat Intelligence Platform
 # Manages both server (Bun) and client (Vite) processes
+#
+# Ports are read from .env at the project root:
+#   PORT          — API server port (default: 4001)
+#   CLIENT_PORT   — Vite dev server port (default: 5174)
+# Override per-host by setting these in .env without modifying this script.
 
 DASHBOARD_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_DIR="${HOME}/.harbinger/logs"
 mkdir -p "$LOG_DIR"
+
+# Source .env so this script sees PORT/CLIENT_PORT (Bun loads it via --env-file
+# for the server itself, but the script needs the values for health checks
+# and the friendly URL print-out).
+ENV_FILE="$DASHBOARD_DIR/.env"
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+  set +a
+fi
+PORT="${PORT:-4001}"
+CLIENT_PORT="${CLIENT_PORT:-5174}"
 
 SERVER_PID_FILE="/tmp/harbinger-server.pid"
 CLIENT_PID_FILE="/tmp/harbinger-client.pid"
@@ -20,21 +38,21 @@ start() {
 
   # Wait for server
   for i in {1..15}; do
-    curl -s http://localhost:4001/health >/dev/null 2>&1 && break
+    curl -s "http://localhost:${PORT}/health" >/dev/null 2>&1 && break
     sleep 1
   done
 
   # Start client
   cd "$DASHBOARD_DIR/apps/client"
-  ./node_modules/.bin/vite --port 5174 --host 0.0.0.0 >> "$LOG_DIR/client.log" 2>&1 &
+  ./node_modules/.bin/vite --port "$CLIENT_PORT" --host 0.0.0.0 >> "$LOG_DIR/client.log" 2>&1 &
   echo $! > "$CLIENT_PID_FILE"
   echo "  Client PID: $(cat $CLIENT_PID_FILE)"
 
   echo ""
   echo "Harbinger is running:"
-  echo "  Dashboard: http://localhost:5174"
-  echo "  API:       http://localhost:4001"
-  echo "  Health:    http://localhost:4001/health"
+  echo "  Dashboard: http://localhost:${CLIENT_PORT}"
+  echo "  API:       http://localhost:${PORT}"
+  echo "  Health:    http://localhost:${PORT}/health"
 }
 
 stop() {
@@ -51,7 +69,7 @@ stop() {
   done
   # Clean up any stragglers
   pkill -f "harbinger.*server" 2>/dev/null
-  pkill -f "vite.*5174" 2>/dev/null
+  pkill -f "vite.*${CLIENT_PORT}" 2>/dev/null
   echo "Done."
 }
 
@@ -64,7 +82,7 @@ status() {
   done
   if [ "$running" -eq 2 ]; then
     echo "Harbinger is running (server + client)"
-    curl -s http://localhost:4001/health | python3 -m json.tool 2>/dev/null
+    curl -s "http://localhost:${PORT}/health" | python3 -m json.tool 2>/dev/null
   elif [ "$running" -gt 0 ]; then
     echo "Harbinger is partially running ($running/2 processes)"
   else
