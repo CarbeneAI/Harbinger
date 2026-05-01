@@ -110,10 +110,7 @@ function getSeverityCount(severity: SeverityLevel): number {
     <div class="flex items-center gap-3 shrink-0">
       <div class="flex items-center gap-2">
         <template v-for="feed in feeds" :key="feed.id">
-          <div
-            class="flex items-center gap-1"
-            :title="`${feed.name} — ${feed.status}${feed.error_msg ? ': ' + feed.error_msg : ''}`"
-          >
+          <div class="relative group flex items-center gap-1 cursor-help">
             <!-- ok -->
             <CheckCircle
               v-if="feed.status === 'ok'"
@@ -130,20 +127,31 @@ function getSeverityCount(severity: SeverityLevel): number {
               class="w-4 h-4 text-severity-critical"
             />
             <span class="text-xs text-text-tertiary font-mono">{{ feed.name }}</span>
+
+            <!-- Tooltip -->
+            <div
+              class="absolute top-full right-0 mt-2 w-64 p-2 rounded-md bg-bg-secondary border border-border-primary shadow-lg text-xs text-text-primary opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-opacity duration-150 z-50 pointer-events-none"
+            >
+              <div class="font-mono font-semibold mb-1">{{ feed.name }}</div>
+              <div class="text-text-tertiary">
+                Status:
+                <span
+                  :class="feed.status === 'ok' ? 'text-accent-green' : feed.status === 'pending' ? 'text-accent-blue' : 'text-severity-critical'"
+                  class="font-mono"
+                >{{ feed.status }}</span>
+              </div>
+              <div v-if="feed.error_msg" class="text-severity-critical mt-1 break-words">{{ feed.error_msg }}</div>
+              <div v-if="feed.last_poll_at" class="text-text-tertiary mt-1">
+                Last poll: {{ new Date(feed.last_poll_at).toLocaleTimeString() }}
+              </div>
+            </div>
           </div>
         </template>
 
         <!-- cve-mcp enrichment status -->
         <div
           v-if="mcpStatus"
-          class="flex items-center gap-1 pl-2 border-l border-border-primary"
-          :title="
-            !mcpStatus.enabled
-              ? 'cve-mcp enrichment disabled (CVE_MCP_ENABLED=false)'
-              : mcpStatus.connected
-              ? `cve-mcp enrichment — ${mcpStatus.toolCount ?? '?'} on-demand tools (NVD, EPSS, KEV, MITRE ATT&CK, AbuseIPDB, GreyNoise, Shodan, VirusTotal, URLScan, crt.sh)`
-              : `cve-mcp enrichment unavailable${mcpStatus.lastError ? ': ' + mcpStatus.lastError : ' — Python server not reachable'}`
-          "
+          class="relative group flex items-center gap-1 pl-2 border-l border-border-primary cursor-help"
         >
           <CircleSlash
             v-if="!mcpStatus.enabled"
@@ -162,6 +170,31 @@ function getSeverityCount(severity: SeverityLevel): number {
             v-if="mcpStatus.enabled && mcpStatus.connected && mcpStatus.toolCount"
             class="text-xs text-text-tertiary font-mono opacity-60"
           >({{ mcpStatus.toolCount }})</span>
+
+          <!-- Tooltip -->
+          <div
+            class="absolute top-full right-0 mt-2 w-80 p-3 rounded-md bg-bg-secondary border border-border-primary shadow-lg text-xs text-text-primary opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-opacity duration-150 z-50 pointer-events-none"
+          >
+            <div class="font-mono font-semibold mb-2">cve-mcp enrichment</div>
+            <div v-if="!mcpStatus.enabled" class="text-text-tertiary">
+              Disabled. Set <span class="font-mono text-accent-blue">CVE_MCP_ENABLED=true</span> in <span class="font-mono">.env</span> to enable.
+            </div>
+            <div v-else-if="mcpStatus.connected">
+              <div class="text-accent-green mb-2 font-mono">
+                ✓ Connected — {{ mcpStatus.toolCount }} on-demand tools
+              </div>
+              <div class="text-text-tertiary leading-relaxed">
+                The AI analyst can call these third-party threat-intel APIs during chat and brief generation: NVD, EPSS, CISA KEV, MITRE ATT&amp;CK, AbuseIPDB, GreyNoise, Shodan, VirusTotal, URLScan, crt.sh.
+              </div>
+            </div>
+            <div v-else>
+              <div class="text-severity-critical mb-1 font-mono">✗ Unreachable</div>
+              <div v-if="mcpStatus.lastError" class="text-text-tertiary break-words">{{ mcpStatus.lastError }}</div>
+              <div v-else class="text-text-tertiary">
+                Python server not responding. Check <span class="font-mono">~/Dev/cve-mcp-server</span> install.
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
