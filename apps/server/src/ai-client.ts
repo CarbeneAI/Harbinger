@@ -9,6 +9,7 @@
 import { homedir } from 'os';
 import type { PAIChatMessage, PAIChatResponse, IOC, SeverityLevel } from './types';
 import { queryIOCs, insertBrief } from './db';
+import { callCveMcpTool } from './mcp-client';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,6 +53,118 @@ const SEARCH_TOOL = {
     },
   },
 };
+
+// ---------------------------------------------------------------------------
+// cve-mcp enrichment tools
+//
+// Backed by the audited cve-mcp Python server (pinned SHA a78d720).
+// Tools selected to match Harbinger's IOC types: cve / ip / domain / url / hash.
+// Implementation: see mcp-client.ts.
+// ---------------------------------------------------------------------------
+
+const CVE_MCP_TOOLS = [
+  {
+    name: 'lookup_cve',
+    description: 'Fetch full NVD details for a CVE: CVSS score, severity, description, affected products, and references.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        cve_id: { type: 'string', description: 'CVE identifier (e.g. CVE-2021-44228)' },
+      },
+      required: ['cve_id'],
+    },
+  },
+  {
+    name: 'get_epss_score',
+    description: 'Get FIRST.org EPSS exploit-probability score for a CVE (0.0–1.0). Higher means more likely to be exploited in the next 30 days.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        cve_ids: { type: 'string', description: 'CVE identifier (or comma-separated list, e.g. "CVE-2021-44228,CVE-2024-1234")' },
+      },
+      required: ['cve_ids'],
+    },
+  },
+  {
+    name: 'check_kev',
+    description: 'Check if a CVE is in the CISA Known Exploited Vulnerabilities catalog. Direct CISA lookup (independent of Harbinger\'s local KEV mirror).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        cve_id: { type: 'string', description: 'CVE identifier' },
+      },
+      required: ['cve_id'],
+    },
+  },
+  {
+    name: 'get_attack_mapping',
+    description: 'Map a CVE to MITRE ATT&CK techniques and tactics for context on how the vulnerability is typically exploited.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        cve_id: { type: 'string', description: 'CVE identifier' },
+      },
+      required: ['cve_id'],
+    },
+  },
+  {
+    name: 'check_ip_reputation',
+    description: 'Check IP reputation across AbuseIPDB and GreyNoise. Returns abuse confidence, recent reports, scanner/benign classification, and tags.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        ip: { type: 'string', description: 'IPv4 or IPv6 address' },
+      },
+      required: ['ip'],
+    },
+  },
+  {
+    name: 'shodan_host_lookup',
+    description: 'Get Shodan host intelligence: open ports, running services, banners, OS, and known vulnerabilities seen on the host.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        ip: { type: 'string', description: 'IPv4 address' },
+      },
+      required: ['ip'],
+    },
+  },
+  {
+    name: 'get_domain_intel',
+    description: 'Get domain intelligence: SSL certificates from crt.sh transparency logs and discovered subdomains.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        domain: { type: 'string', description: 'Domain name (e.g. example.com)' },
+      },
+      required: ['domain'],
+    },
+  },
+  {
+    name: 'check_url_safety',
+    description: 'Check URL safety via URLScan.io. Returns scan results and threat verdict.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        url_or_domain: { type: 'string', description: 'Full URL or domain to check (e.g. https://example.com/path or example.com)' },
+      },
+      required: ['url_or_domain'],
+    },
+  },
+  {
+    name: 'lookup_file_hash',
+    description: 'Look up a file hash on VirusTotal. Returns detection ratio across antivirus engines, malware family attribution, and first/last seen dates.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        hash_str: { type: 'string', description: 'MD5, SHA-1, or SHA-256 hash' },
+      },
+      required: ['hash_str'],
+    },
+  },
+];
+
+const CVE_MCP_TOOL_NAMES = new Set(CVE_MCP_TOOLS.map((t) => t.name));
 
 const MAX_TOOL_CALLS = 5;
 
@@ -304,14 +417,16 @@ export async function sendChatMessage(
     const systemPrompt =
       buildSystemPrompt(iocContext) +
       `\n\n## Tools Available\n\n` +
-      `You have access to \`search_iocs\` to query the live threat intelligence database. ` +
-      `Use it to:\n` +
-      `- Find related IOCs by value, type, or feed\n` +
-      `- Understand campaign scope by correlating indicators\n` +
-      `- Verify whether an IOC is known and its confidence level\n\n` +
-      `IMPORTANT: Search 1-2 times maximum, then provide your analysis. Do NOT search more than twice. ` +
-      `The IOC context is already provided above — use it as your primary data source and only search to find *related* indicators. ` +
-      `Always end with a complete written analysis, never end on a tool call.`;
+      `**search_iocs** — query the live local threat intelligence database to find related IOCs by value, type, or feed.\n\n` +
+      `**cve-mcp enrichment tools** (third-party threat intel — call only when the question warrants it):\n` +
+      `- CVE: \`lookup_cve\`, \`get_epss_score\`, \`check_kev\`, \`get_attack_mapping\`\n` +
+      `- IP: \`check_ip_reputation\` (AbuseIPDB+GreyNoise), \`shodan_host_lookup\`\n` +
+      `- Domain: \`get_domain_intel\` (crt.sh certs + subdomains)\n` +
+      `- URL: \`check_url_safety\` (URLScan)\n` +
+      `- Hash: \`lookup_file_hash\` (VirusTotal)\n\n` +
+      `**PRIVACY** — enrichment tools forward IOC values to third-party APIs (VirusTotal, Shodan, AbuseIPDB, GreyNoise, URLScan, etc.). Do NOT enrich IOCs that look internal or private: RFC1918 IPs (10.x, 172.16–31.x, 192.168.x), loopback/link-local, internal hostnames, .corp / .local / .lan / .internal TLDs, or hashes the user describes as internally generated. For those, use \`search_iocs\` only.\n\n` +
+      `IMPORTANT: Use the IOC context already provided above as your primary source. Call tools only to fill specific gaps — most analyses need 0–2 tool calls total. ` +
+      `Never call enrichment tools speculatively. Always end with a complete written analysis, never on a tool call.`;
 
     const messages: any[] = [
       ...chatHistory.map((m) => ({ role: m.role, content: m.content })),
@@ -332,7 +447,7 @@ export async function sendChatMessage(
           model: 'claude-sonnet-4-20250514',
           max_tokens: 2048,
           system: systemPrompt,
-          tools: [SEARCH_TOOL],
+          tools: [SEARCH_TOOL, ...CVE_MCP_TOOLS],
           messages,
         }),
       });
@@ -361,6 +476,22 @@ export async function sendChatMessage(
               type: 'tool_result',
               tool_use_id: toolUse.id,
               content: resultText,
+            });
+          } else if (CVE_MCP_TOOL_NAMES.has(toolUse.name)) {
+            console.log(`[ai-client] Tool call #${toolCallCount}: ${toolUse.name}`, toolUse.input);
+            const resultText = await callCveMcpTool(toolUse.name, toolUse.input);
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: toolUse.id,
+              content: resultText,
+            });
+          } else {
+            console.warn(`[ai-client] Unknown tool: ${toolUse.name}`);
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: toolUse.id,
+              content: `Unknown tool: ${toolUse.name}`,
+              is_error: true,
             });
           }
         }

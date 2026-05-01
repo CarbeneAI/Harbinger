@@ -18,6 +18,7 @@ Part of CarbeneAI's open-source security suite alongside [Specter](https://githu
 
 - **Three Free Threat Feeds** — CISA Known Exploited Vulnerabilities, Abuse.ch URLhaus, and Abuse.ch ThreatFox. No paid subscriptions required.
 - **AI Threat Analyst** — Ask questions about IOCs in plain English. The AI searches your local database, correlates indicators, and explains threats with actionable remediation steps.
+- **Threat-Intel Enrichment** *(optional)* — On-demand IOC enrichment via the audited [cve-mcp](https://github.com/mukul975/cve-mcp-server) Python server: NVD details, EPSS exploit-probability scores, direct CISA KEV checks, MITRE ATT&CK mapping, AbuseIPDB + GreyNoise IP reputation, Shodan host intel, VirusTotal hash lookups, URLScan reputation, and crt.sh certificate transparency for domains. The AI calls these tools selectively — most analyses still run on local data alone.
 - **Cloud/Local AI Toggle** — Switch between Anthropic Claude (cloud) and Ollama (local) with one click. Sensitive threat data stays on your network.
 - **Analyst Guidance Mode** — AI responses follow a structured triage format: What is this? Why does it matter? How do I know? What do I do next? What should I watch for?
 - **IOC Detail Cards** — Click any IOC to see full context: severity, type, description, source, timestamps, tags, and reference links.
@@ -67,6 +68,7 @@ One-click AI-generated intelligence brief summarizing critical threats, active c
 - [Bun](https://bun.sh) v1.0+
 - [Abuse.ch Auth Key](https://auth.abuse.ch/) (free — for URLhaus + ThreatFox feeds)
 - [Anthropic API key](https://console.anthropic.com) (for cloud AI) **or** [Ollama](https://ollama.com) (for local AI)
+- *Optional:* [cve-mcp](https://github.com/mukul975/cve-mcp-server) — adds threat-intel enrichment tools (see [Threat-Intel Enrichment](#threat-intel-enrichment))
 
 ## Quick Start
 
@@ -120,15 +122,19 @@ Feeds begin polling immediately. CISA KEV loads ~1,500 CVEs, URLhaus adds malici
 | `POLL_INTERVAL_MS` | `3600000` | Feed poll interval in ms (default: 1 hour) |
 | `DB_PATH` | `./harbinger.db` | SQLite database file path |
 | `PORT` | `4001` | Server port |
+| `CVE_MCP_ENABLED` | `true` | Enable cve-mcp threat-intel enrichment tools (set `false` to disable) |
+| `CVE_MCP_PYTHON` | `~/Dev/cve-mcp-server/.venv/bin/python` | Path to the cve-mcp Python interpreter |
+| `CVE_MCP_CWD` | `~/Dev/cve-mcp-server` | Path to the cve-mcp install directory |
 
 ## How AI Analysis Works
 
 When you select an IOC and use the chat panel:
 
 1. The selected IOC is shown as a detail card with full context
-2. The AI can call `search_iocs` tool to query your local SQLite database
-3. Up to 3 tool call iterations for deep correlation
-4. Quick actions: Analyze, Threat Brief, Hunt Queries, MITRE ATT&CK/D3FEND mapping
+2. The AI can call `search_iocs` to query your local SQLite database
+3. If cve-mcp enrichment is enabled, the AI can also call third-party intel tools (see [Threat-Intel Enrichment](#threat-intel-enrichment) below)
+4. Up to 5 tool call iterations for deep correlation
+5. Quick actions: Analyze, Threat Brief, Hunt Queries, MITRE ATT&CK/D3FEND mapping
 
 ### Cloud vs Local AI
 
@@ -137,6 +143,7 @@ When you select an IOC and use the chat panel:
 | **Model** | Claude Sonnet | Any Ollama model |
 | **Data privacy** | Sent to Anthropic API | Stays on your network |
 | **IOC search** | Autonomous tool use | Not available |
+| **cve-mcp enrichment** | Autonomous tool use | Not available |
 | **Speed** | Fast | Depends on hardware |
 | **Cost** | API usage fees | Free |
 
@@ -149,6 +156,34 @@ When you select an IOC and use the chat panel:
 | [ThreatFox](https://threatfox.abuse.ch/) | IOCs with malware attribution | ~3,500+ | Weekly (7-day window) |
 
 All feeds are free. CISA KEV requires no authentication. URLhaus and ThreatFox require a free API key from [auth.abuse.ch](https://auth.abuse.ch/).
+
+## Threat-Intel Enrichment
+
+Optional integration with the audited [cve-mcp](https://github.com/mukul975/cve-mcp-server) Python server adds 9 on-demand enrichment tools to the AI analyst (Cloud/Anthropic mode only). Tools are called selectively by the AI when the IOC context warrants deeper investigation.
+
+| IOC type | Enrichment tools | Source(s) |
+|---|---|---|
+| **CVE** | `lookup_cve` | NVD (CVSS, description, references) |
+| **CVE** | `get_epss_score` | FIRST.org EPSS exploit-probability |
+| **CVE** | `check_kev` | Direct CISA KEV catalog lookup |
+| **CVE** | `get_attack_mapping` | MITRE ATT&CK technique mapping |
+| **IP** | `check_ip_reputation` | AbuseIPDB + GreyNoise (combined) |
+| **IP** | `shodan_host_lookup` | Shodan (open ports, services, banners) |
+| **Domain** | `get_domain_intel` | crt.sh certificate transparency + subdomains |
+| **URL** | `check_url_safety` | URLScan.io |
+| **Hash** | `lookup_file_hash` | VirusTotal |
+
+### Setup
+
+1. Install cve-mcp following its [setup guide](https://github.com/mukul975/cve-mcp-server) (target `~/Dev/cve-mcp-server`)
+2. Configure cve-mcp's own `.env` with your API keys (NVD, AbuseIPDB, VirusTotal, Shodan, GreyNoise — all have free tiers)
+3. Set `CVE_MCP_ENABLED=true` in Harbinger's `.env` (default)
+4. Override `CVE_MCP_PYTHON` and `CVE_MCP_CWD` if cve-mcp lives outside `~/Dev/cve-mcp-server`
+5. Restart Harbinger — the AI analyst will see the new tools automatically
+
+### Privacy Note
+
+Enrichment tools forward IOC values (IPs, domains, URLs, hashes, CVE IDs) to third-party APIs. Don't enrich internal/confidential indicators — the third party sees them. The AI is instructed to enrich only when the context warrants it; you can fully disable with `CVE_MCP_ENABLED=false`.
 
 ## API Reference
 
@@ -182,7 +217,7 @@ All feeds are free. CISA KEV requires no authentication. URLhaus and ThreatFox r
 - **Wazuh/Specter Integration** — Bidirectional enrichment between Harbinger and Specter. When Specter sees an alert, Harbinger provides threat context automatically.
 - **PDF Report Ingestion** — Ingest threat reports, extract IOCs and TTPs via AI.
 - **Custom Feed Support** — Add your own STIX/TAXII or CSV feeds.
-- **IOC Enrichment** — VirusTotal, Shodan, WHOIS lookups for deeper context.
+- **CVE Inventory Alerting** — Track an inventory of products/versions and alert when new CVEs match.
 - **STIX2 Export** — Export IOCs as STIX2 bundles for sharing.
 
 ## Part of CarbeneAI's Security Suite
