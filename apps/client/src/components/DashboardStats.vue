@@ -24,9 +24,11 @@ const emit = defineEmits<{
 
 // Pop-out tooltip rendered via Teleport to escape the top bar's overflow-x-auto
 // container. Fixed positioning anchored to the hovered indicator.
+// Note: `right` is pre-computed at hover time (window.innerWidth - rect.right)
+// so the template doesn't need access to `window` at render time.
 type ActivePopover =
-  | { kind: 'feed'; feed: Feed; left: number; top: number }
-  | { kind: 'mcp'; status: McpStatus; left: number; top: number }
+  | { kind: 'feed'; feed: Feed; top: number; right: number }
+  | { kind: 'mcp'; status: McpStatus; top: number; right: number }
   | null;
 
 const popover = ref<ActivePopover>(null);
@@ -36,9 +38,8 @@ function showFeedPopover(event: MouseEvent, feed: Feed) {
   popover.value = {
     kind: 'feed',
     feed,
-    // Anchor to the right edge of the trigger; tooltip extends to the left of that.
-    left: rect.right,
     top: rect.bottom + 8,
+    right: window.innerWidth - rect.right,
   };
 }
 
@@ -47,8 +48,8 @@ function showMcpPopover(event: MouseEvent, status: McpStatus) {
   popover.value = {
     kind: 'mcp',
     status,
-    left: rect.right,
     top: rect.bottom + 8,
+    right: window.innerWidth - rect.right,
   };
 }
 
@@ -216,7 +217,7 @@ function getSeverityCount(severity: SeverityLevel): number {
       :style="{
         top: popover.top + 'px',
         left: 'auto',
-        right: (window.innerWidth - popover.left) + 'px',
+        right: popover.right + 'px',
       }"
     >
       <!-- Feed popover -->
