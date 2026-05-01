@@ -2,8 +2,8 @@
   "name": "harbinger-server",
   "version": "0.1.0",
   "scripts": {
-    "dev": "bun --watch src/index.ts",
-    "start": "bun src/index.ts"
+    "dev": "bun --env-file=../../.env --watch src/index.ts",
+    "start": "bun --env-file=../../.env src/index.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
