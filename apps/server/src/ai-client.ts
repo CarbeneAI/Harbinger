@@ -11,6 +11,41 @@ import type { PAIChatMessage, PAIChatResponse, IOC, SeverityLevel } from './type
 import { queryIOCs, insertBrief } from './db';
 import { callCveMcpTool } from './mcp-client';
 
+/**
+ * Defang URLs, hostnames, and IPv4 addresses in threat-intel output so that
+ * Microsoft Teams / email clients / Slack do not block the message as
+ * containing malicious links. Standard IOC-sharing convention:
+ *   http://  -> hxxp://
+ *   https:// -> hxxps://
+ *   evil.com -> evil[.]com  (only the dots inside URL hostnames)
+ *   1.2.3.4  -> 1[.]2[.]3[.]4
+ * Idempotent: pre-defanged input ([.]) is not double-defanged.
+ */
+function defangText(text: string): string {
+  if (!text) return text;
+
+  let result = text
+    .replace(/\bhttps:\/\//gi, 'hxxps://')
+    .replace(/\bhttp:\/\//gi, 'hxxp://')
+    .replace(/\bftps:\/\//gi, 'fxps://')
+    .replace(/\bftp:\/\//gi, 'fxp://');
+
+  // Hostname inside any scheme://host[/path] — defang dots, not path dots.
+  // Negative lookahead `(?!\])` keeps existing [.] from being double-defanged.
+  result = result.replace(
+    /([a-z]+:\/\/)([^\s\/?#]+)/gi,
+    (_match, scheme: string, host: string) => `${scheme}${host.replace(/\.(?!\])/g, '[.]')}`,
+  );
+
+  // Bare IPv4 addresses (won't match already-defanged 1[.]2[.]3[.]4).
+  result = result.replace(
+    /\b(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/g,
+    '$1[.]$2[.]$3[.]$4',
+  );
+
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -229,7 +264,8 @@ export const QUICK_PROMPTS = {
   analyze:
     'Analyze this IOC. Search the threat intelligence database for related indicators — same IP ranges, domains, or threat actors. Explain what this IOC is, how serious it is, and whether it is part of a larger campaign.',
   brief:
-    'Generate a threat brief summarizing the most critical and recent threats in the intelligence database. Focus on active campaigns, newly exploited CVEs, and high-confidence IOCs. Organize by severity.',
+    'Generate a threat brief summarizing the most critical and recent threats in the intelligence database. Focus on active campaigns, newly exploited CVEs, and high-confidence IOCs. Organize by severity.\n\n' +
+    'IMPORTANT — defang all URLs, hostnames, and IPs in your output so the brief can be safely shared in Teams/Slack/email without being blocked as malicious. Use the standard IOC-sharing convention: `http://` → `hxxp://`, `https://` → `hxxps://`, and replace dots in hostnames and IPv4 addresses with `[.]` (e.g. `evil[.]com`, `1[.]2[.]3[.]4`). Leave URL paths and CVE IDs unchanged.',
   hunt:
     'Generate threat hunting queries for this IOC. Provide queries in Sigma rule format, KQL (for Sentinel/Elastic), and SPL (for Splunk). Include detection logic for both the specific IOC and behavioral patterns associated with it.',
   mitre:
@@ -574,6 +610,12 @@ export async function generateThreatBrief(
   const prompt = QUICK_PROMPTS.brief + '\n\n' + contextMarkdown;
 
   const result = await sendChatMessage(prompt, [], undefined, undefined, provider, ollamaUrl, ollamaModel);
+
+  // Defang any live URLs/IPs the AI emitted so the brief is safe to paste
+  // into Teams/Slack/email without being blocked as containing malicious links.
+  if (result.success && result.content) {
+    result.content = defangText(result.content);
+  }
 
   // Persist the brief if generation succeeded
   if (result.success && result.content) {
