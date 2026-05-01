@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref } from 'vue';
 import {
   Shield,
   RefreshCw,
@@ -20,6 +21,40 @@ const emit = defineEmits<{
   (e: 'toggleSeverity', severity: SeverityLevel): void;
   (e: 'triggerPoll'): void;
 }>();
+
+// Pop-out tooltip rendered via Teleport to escape the top bar's overflow-x-auto
+// container. Fixed positioning anchored to the hovered indicator.
+type ActivePopover =
+  | { kind: 'feed'; feed: Feed; left: number; top: number }
+  | { kind: 'mcp'; status: McpStatus; left: number; top: number }
+  | null;
+
+const popover = ref<ActivePopover>(null);
+
+function showFeedPopover(event: MouseEvent, feed: Feed) {
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  popover.value = {
+    kind: 'feed',
+    feed,
+    // Anchor to the right edge of the trigger; tooltip extends to the left of that.
+    left: rect.right,
+    top: rect.bottom + 8,
+  };
+}
+
+function showMcpPopover(event: MouseEvent, status: McpStatus) {
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  popover.value = {
+    kind: 'mcp',
+    status,
+    left: rect.right,
+    top: rect.bottom + 8,
+  };
+}
+
+function hidePopover() {
+  popover.value = null;
+}
 
 const IOC_TYPES: { key: IOCType; label: string; color: string }[] = [
   { key: 'ip',     label: 'IP',     color: 'text-blue-400 bg-blue-400/10 border-blue-400/30' },
@@ -110,7 +145,11 @@ function getSeverityCount(severity: SeverityLevel): number {
     <div class="flex items-center gap-3 shrink-0">
       <div class="flex items-center gap-2">
         <template v-for="feed in feeds" :key="feed.id">
-          <div class="relative group flex items-center gap-1 cursor-help">
+          <div
+            class="flex items-center gap-1 cursor-help"
+            @mouseenter="showFeedPopover($event, feed)"
+            @mouseleave="hidePopover"
+          >
             <!-- ok -->
             <CheckCircle
               v-if="feed.status === 'ok'"
@@ -127,31 +166,15 @@ function getSeverityCount(severity: SeverityLevel): number {
               class="w-4 h-4 text-severity-critical"
             />
             <span class="text-xs text-text-tertiary font-mono">{{ feed.name }}</span>
-
-            <!-- Tooltip -->
-            <div
-              class="absolute top-full right-0 mt-2 w-64 p-2 rounded-md bg-bg-secondary border border-border-primary shadow-lg text-xs text-text-primary opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-opacity duration-150 z-50 pointer-events-none"
-            >
-              <div class="font-mono font-semibold mb-1">{{ feed.name }}</div>
-              <div class="text-text-tertiary">
-                Status:
-                <span
-                  :class="feed.status === 'ok' ? 'text-accent-green' : feed.status === 'pending' ? 'text-accent-blue' : 'text-severity-critical'"
-                  class="font-mono"
-                >{{ feed.status }}</span>
-              </div>
-              <div v-if="feed.error_msg" class="text-severity-critical mt-1 break-words">{{ feed.error_msg }}</div>
-              <div v-if="feed.last_poll_at" class="text-text-tertiary mt-1">
-                Last poll: {{ new Date(feed.last_poll_at).toLocaleTimeString() }}
-              </div>
-            </div>
           </div>
         </template>
 
         <!-- cve-mcp enrichment status -->
         <div
           v-if="mcpStatus"
-          class="relative group flex items-center gap-1 pl-2 border-l border-border-primary cursor-help"
+          class="flex items-center gap-1 pl-2 border-l border-border-primary cursor-help"
+          @mouseenter="showMcpPopover($event, mcpStatus)"
+          @mouseleave="hidePopover"
         >
           <CircleSlash
             v-if="!mcpStatus.enabled"
@@ -170,31 +193,6 @@ function getSeverityCount(severity: SeverityLevel): number {
             v-if="mcpStatus.enabled && mcpStatus.connected && mcpStatus.toolCount"
             class="text-xs text-text-tertiary font-mono opacity-60"
           >({{ mcpStatus.toolCount }})</span>
-
-          <!-- Tooltip -->
-          <div
-            class="absolute top-full right-0 mt-2 w-80 p-3 rounded-md bg-bg-secondary border border-border-primary shadow-lg text-xs text-text-primary opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-opacity duration-150 z-50 pointer-events-none"
-          >
-            <div class="font-mono font-semibold mb-2">cve-mcp enrichment</div>
-            <div v-if="!mcpStatus.enabled" class="text-text-tertiary">
-              Disabled. Set <span class="font-mono text-accent-blue">CVE_MCP_ENABLED=true</span> in <span class="font-mono">.env</span> to enable.
-            </div>
-            <div v-else-if="mcpStatus.connected">
-              <div class="text-accent-green mb-2 font-mono">
-                ✓ Connected — {{ mcpStatus.toolCount }} on-demand tools
-              </div>
-              <div class="text-text-tertiary leading-relaxed">
-                The AI analyst can call these third-party threat-intel APIs during chat and brief generation: NVD, EPSS, CISA KEV, MITRE ATT&amp;CK, AbuseIPDB, GreyNoise, Shodan, VirusTotal, URLScan, crt.sh.
-              </div>
-            </div>
-            <div v-else>
-              <div class="text-severity-critical mb-1 font-mono">✗ Unreachable</div>
-              <div v-if="mcpStatus.lastError" class="text-text-tertiary break-words">{{ mcpStatus.lastError }}</div>
-              <div v-else class="text-text-tertiary">
-                Python server not responding. Check <span class="font-mono">~/Dev/cve-mcp-server</span> install.
-              </div>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -208,4 +206,69 @@ function getSeverityCount(severity: SeverityLevel): number {
       </button>
     </div>
   </div>
+
+  <!-- Pop-out tooltip — teleported to body so it escapes the top bar's overflow-x-auto clipping -->
+  <Teleport to="body">
+    <div
+      v-if="popover"
+      class="fixed z-[9999] rounded-md bg-bg-secondary border border-border-primary shadow-2xl text-xs text-text-primary pointer-events-none"
+      :class="popover.kind === 'mcp' ? 'w-80 p-3' : 'w-64 p-2'"
+      :style="{
+        top: popover.top + 'px',
+        left: 'auto',
+        right: (window.innerWidth - popover.left) + 'px',
+      }"
+    >
+      <!-- Feed popover -->
+      <template v-if="popover.kind === 'feed'">
+        <div class="font-mono font-semibold mb-1 text-text-primary">{{ popover.feed.name }}</div>
+        <div class="text-text-tertiary">
+          Status:
+          <span
+            :class="popover.feed.status === 'ok' ? 'text-accent-green' : popover.feed.status === 'pending' ? 'text-accent-blue' : 'text-severity-critical'"
+            class="font-mono"
+          >{{ popover.feed.status }}</span>
+        </div>
+        <div v-if="popover.feed.error_msg" class="text-severity-critical mt-1 break-words">{{ popover.feed.error_msg }}</div>
+        <div v-if="popover.feed.last_poll_at" class="text-text-tertiary mt-1">
+          Last poll: {{ new Date(popover.feed.last_poll_at).toLocaleTimeString() }}
+        </div>
+      </template>
+
+      <!-- cve-mcp popover -->
+      <template v-else-if="popover.kind === 'mcp'">
+        <div class="font-mono font-semibold mb-2 text-text-primary">cve-mcp enrichment</div>
+        <div v-if="!popover.status.enabled" class="text-text-tertiary leading-relaxed">
+          Disabled. Set <span class="font-mono text-accent-blue">CVE_MCP_ENABLED=true</span> in <span class="font-mono">.env</span> to enable.
+        </div>
+        <div v-else-if="popover.status.connected">
+          <div class="text-accent-green mb-2 font-mono">
+            ✓ Connected — {{ popover.status.toolCount }} on-demand tools
+          </div>
+          <div class="text-text-tertiary leading-relaxed">
+            The AI analyst can call these third-party threat-intel APIs during chat and brief generation:
+          </div>
+          <ul class="mt-2 grid grid-cols-2 gap-x-2 gap-y-0.5 text-text-secondary font-mono text-[11px]">
+            <li>• NVD</li>
+            <li>• EPSS</li>
+            <li>• CISA KEV</li>
+            <li>• MITRE ATT&amp;CK</li>
+            <li>• AbuseIPDB</li>
+            <li>• GreyNoise</li>
+            <li>• Shodan</li>
+            <li>• VirusTotal</li>
+            <li>• URLScan</li>
+            <li>• crt.sh</li>
+          </ul>
+        </div>
+        <div v-else>
+          <div class="text-severity-critical mb-1 font-mono">✗ Unreachable</div>
+          <div v-if="popover.status.lastError" class="text-text-tertiary break-words">{{ popover.status.lastError }}</div>
+          <div v-else class="text-text-tertiary">
+            Python server not responding. Check <span class="font-mono">~/Dev/cve-mcp-server</span> install.
+          </div>
+        </div>
+      </template>
+    </div>
+  </Teleport>
 </template>
