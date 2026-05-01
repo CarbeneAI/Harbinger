@@ -19,6 +19,7 @@ Part of CarbeneAI's open-source security suite alongside [Specter](https://githu
 - **Three Free Threat Feeds** — CISA Known Exploited Vulnerabilities, Abuse.ch URLhaus, and Abuse.ch ThreatFox. No paid subscriptions required.
 - **AI Threat Analyst** — Ask questions about IOCs in plain English. The AI searches your local database, correlates indicators, and explains threats with actionable remediation steps.
 - **Threat-Intel Enrichment** *(optional)* — On-demand IOC enrichment via the audited [cve-mcp](https://github.com/mukul975/cve-mcp-server) Python server: NVD details, EPSS exploit-probability scores, direct CISA KEV checks, MITRE ATT&CK mapping, AbuseIPDB + GreyNoise IP reputation, Shodan host intel, VirusTotal hash lookups, URLScan reputation, and crt.sh certificate transparency for domains. The AI calls these tools selectively — most analyses still run on local data alone.
+- **Auto-Defanged Output** — All AI responses (chat, analyses, threat briefs) automatically defang URLs, hostnames, and IPs using the standard IOC-sharing convention (`http://` → `hxxp://`, `evil.com` → `evil[.]com`, `1.2.3.4` → `1[.]2[.]3[.]4`). Paste briefs into Microsoft Teams, Slack, or email without getting blocked as malicious links. URL paths and CVE IDs are preserved.
 - **Cloud/Local AI Toggle** — Switch between Anthropic Claude (cloud) and Ollama (local) with one click. Sensitive threat data stays on your network.
 - **Analyst Guidance Mode** — AI responses follow a structured triage format: What is this? Why does it matter? How do I know? What do I do next? What should I watch for?
 - **IOC Detail Cards** — Click any IOC to see full context: severity, type, description, source, timestamps, tags, and reference links.
@@ -156,6 +157,39 @@ When you select an IOC and use the chat panel:
 | [ThreatFox](https://threatfox.abuse.ch/) | IOCs with malware attribution | ~3,500+ | Weekly (7-day window) |
 
 All feeds are free. CISA KEV requires no authentication. URLhaus and ThreatFox require a free API key from [auth.abuse.ch](https://auth.abuse.ch/).
+
+## Auto-Defanged Output
+
+Threat intelligence often involves real malicious URLs and IPs. When you paste an AI analysis or threat brief into Microsoft Teams, Slack, or email, those clients flag live malicious links and either block the message or rewrite it. Harbinger automatically defangs all AI output using the industry-standard IOC-sharing convention before returning it.
+
+### What gets defanged
+
+| Pattern | Before | After |
+|---|---|---|
+| URL scheme | `http://` | `hxxp://` |
+| URL scheme | `https://` | `hxxps://` |
+| URL scheme | `ftp://` | `fxp://` |
+| Hostname dots | `https://evil.example.com/path` | `hxxps://evil[.]example[.]com/path` |
+| IPv4 addresses | `192.168.1.1` | `192[.]168[.]1[.]1` |
+
+### What is preserved
+
+- URL paths, query strings, and fragments (`/api/v1/foo?id=1#bar` is unchanged)
+- CVE IDs (`CVE-2021-44228` is unchanged)
+- File extensions inside paths (`.html`, `.exe` inside the path stay literal)
+- Plain prose with no URLs/IPs
+
+### Where it applies
+
+Defanging is applied to all three AI-output paths:
+
+1. **Chat responses** (Cloud/Anthropic and Local/Ollama)
+2. **Threat briefs** (the one-click brief generator)
+3. **All quick actions** (Analyze, Threat Brief, Hunt Queries, MITRE ATT&CK/D3FEND)
+
+Two layers of defense: (1) the system prompt instructs the AI to emit defanged form natively, and (2) a deterministic post-processor runs over the response before returning. The post-processor is idempotent — pre-defanged input passes through unchanged.
+
+If you need raw (non-defanged) URLs for a specific use case (e.g. piping into automated scanning), open an issue — we'll add an opt-out flag.
 
 ## Threat-Intel Enrichment
 

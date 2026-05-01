@@ -403,7 +403,7 @@ async function sendOllamaMessage(
 
     const data = (await response.json()) as any;
     const content: string = data.choices?.[0]?.message?.content ?? '';
-    return { success: true, content };
+    return { success: true, content: defangText(content) };
   } catch (error: any) {
     console.error('[ai-client] Ollama error:', error);
     if (error?.name === 'AbortError') {
@@ -461,6 +461,7 @@ export async function sendChatMessage(
       `- URL: \`check_url_safety\` (URLScan)\n` +
       `- Hash: \`lookup_file_hash\` (VirusTotal)\n\n` +
       `**PRIVACY** — enrichment tools forward IOC values to third-party APIs (VirusTotal, Shodan, AbuseIPDB, GreyNoise, URLScan, etc.). Do NOT enrich IOCs that look internal or private: RFC1918 IPs (10.x, 172.16–31.x, 192.168.x), loopback/link-local, internal hostnames, .corp / .local / .lan / .internal TLDs, or hashes the user describes as internally generated. For those, use \`search_iocs\` only.\n\n` +
+      `**DEFANG OUTPUT** — analysts often paste your responses into Microsoft Teams, Slack, or email, where live malicious URLs get blocked. Always defang URLs, hostnames, and IPs in your output using the standard IOC convention: \`http://\` → \`hxxp://\`, \`https://\` → \`hxxps://\`, dots in hostnames and IPv4 addresses → \`[.]\` (e.g. \`evil[.]com\`, \`1[.]2[.]3[.]4\`). Leave URL paths and CVE IDs unchanged. Apply this to ALL URLs and IPs in your responses — both IOCs and reference URLs.\n\n` +
       `IMPORTANT: Use the IOC context already provided above as your primary source. Call tools only to fill specific gaps — most analyses need 0–2 tool calls total. ` +
       `Never call enrichment tools speculatively. Always end with a complete written analysis, never on a tool call.`;
 
@@ -540,7 +541,7 @@ export async function sendChatMessage(
       // Terminal response — extract text blocks
       const textBlocks = (data.content as any[]).filter((block: any) => block.type === 'text');
       const content = textBlocks.map((block: any) => block.text as string).join('\n');
-      return { success: true, content };
+      return { success: true, content: defangText(content) };
     }
 
     // Reached max tool calls
