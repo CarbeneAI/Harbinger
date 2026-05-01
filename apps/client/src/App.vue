@@ -9,7 +9,7 @@ import { usePAIChat } from './composables/usePAIChat';
 import type { IOC, SeverityLevel, QuickPrompts, AIProvider } from './types';
 
 // --- Data composables ---
-const { feeds, stats, triggerPoll } = useFeeds();
+const { feeds, stats, mcpStatus, triggerPoll } = useFeeds();
 const { iocs, total, loading, setSearch, setFilter, setSort, loadMore, refresh } = useIOCs();
 
 // --- Chat composable ---
@@ -136,6 +136,7 @@ const startResize = (e: MouseEvent) => {
     <DashboardStats
       :stats="stats"
       :feeds="feeds"
+      :mcp-status="mcpStatus"
       @toggle-severity="handleToggleSeverity"
       @trigger-poll="handleTriggerPoll"
     />

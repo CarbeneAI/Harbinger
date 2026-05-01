@@ -5,12 +5,15 @@ import {
   CheckCircle,
   XCircle,
   Loader2,
+  Sparkles,
+  CircleSlash,
 } from 'lucide-vue-next';
-import type { IOCStats, Feed, SeverityLevel, IOCType } from '../types';
+import type { IOCStats, Feed, McpStatus, SeverityLevel, IOCType } from '../types';
 
 const props = defineProps<{
   stats: IOCStats | null;
   feeds: Feed[];
+  mcpStatus: McpStatus | null;
 }>();
 
 const emit = defineEmits<{
@@ -129,6 +132,37 @@ function getSeverityCount(severity: SeverityLevel): number {
             <span class="text-xs text-text-tertiary font-mono">{{ feed.name }}</span>
           </div>
         </template>
+
+        <!-- cve-mcp enrichment status -->
+        <div
+          v-if="mcpStatus"
+          class="flex items-center gap-1 pl-2 border-l border-border-primary"
+          :title="
+            !mcpStatus.enabled
+              ? 'cve-mcp enrichment disabled (CVE_MCP_ENABLED=false)'
+              : mcpStatus.connected
+              ? `cve-mcp enrichment — ${mcpStatus.toolCount ?? '?'} on-demand tools (NVD, EPSS, KEV, MITRE ATT&CK, AbuseIPDB, GreyNoise, Shodan, VirusTotal, URLScan, crt.sh)`
+              : `cve-mcp enrichment unavailable${mcpStatus.lastError ? ': ' + mcpStatus.lastError : ' — Python server not reachable'}`
+          "
+        >
+          <CircleSlash
+            v-if="!mcpStatus.enabled"
+            class="w-4 h-4 text-text-tertiary"
+          />
+          <Sparkles
+            v-else-if="mcpStatus.connected"
+            class="w-4 h-4 text-accent-green"
+          />
+          <XCircle
+            v-else
+            class="w-4 h-4 text-severity-critical"
+          />
+          <span class="text-xs text-text-tertiary font-mono">cve-mcp</span>
+          <span
+            v-if="mcpStatus.enabled && mcpStatus.connected && mcpStatus.toolCount"
+            class="text-xs text-text-tertiary font-mono opacity-60"
+          >({{ mcpStatus.toolCount }})</span>
+        </div>
       </div>
 
       <!-- Refresh button -->

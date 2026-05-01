@@ -35,6 +35,13 @@ export interface IOCStats {
   lastUpdated?: number;
 }
 
+export interface McpStatus {
+  enabled: boolean;
+  connected: boolean;
+  toolCount?: number;
+  lastError?: string;
+}
+
 export interface ThreatBrief {
   id: number;
   created_at: number;

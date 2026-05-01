@@ -6,6 +6,7 @@
 import { initDB, getStats, getFeeds, queryIOCs, getIOCById, getBriefs, getBriefById } from './db';
 import { startFeedScheduler, pollAllFeeds } from './feeds';
 import { sendChatMessage, generateThreatBrief, getOllamaModels, QUICK_PROMPTS } from './ai-client';
+import { getCveMcpStatus } from './mcp-client';
 
 // Initialize database
 const db = initDB();
@@ -64,6 +65,12 @@ const server = Bun.serve({
     if (path === '/feeds/poll' && req.method === 'POST') {
       pollAllFeeds(); // fire and forget
       return json({ triggered: true, message: 'Poll started' });
+    }
+
+    // GET /mcp/status — cve-mcp threat-intel enrichment health
+    if (path === '/mcp/status' && req.method === 'GET') {
+      const status = await getCveMcpStatus();
+      return json(status);
     }
 
     // GET /iocs
