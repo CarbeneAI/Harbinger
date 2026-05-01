@@ -42,9 +42,9 @@ start() {
     sleep 1
   done
 
-  # Start client
+  # Start client via Bun (Node CJS chokes on the ESM postcss.config.js)
   cd "$DASHBOARD_DIR/apps/client"
-  ./node_modules/.bin/vite --port "$CLIENT_PORT" --host 0.0.0.0 >> "$LOG_DIR/client.log" 2>&1 &
+  bun ./node_modules/.bin/vite --port "$CLIENT_PORT" --host 0.0.0.0 >> "$LOG_DIR/client.log" 2>&1 &
   echo $! > "$CLIENT_PID_FILE"
   echo "  Client PID: $(cat $CLIENT_PID_FILE)"
 
