@@ -481,7 +481,7 @@ export async function sendChatMessage(
           'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-sonnet-4-6',
           max_tokens: 2048,
           system: systemPrompt,
           tools: [SEARCH_TOOL, ...CVE_MCP_TOOLS],
@@ -622,7 +622,7 @@ export async function generateThreatBrief(
   if (result.success && result.content) {
     try {
       const model =
-        provider === 'ollama' ? (ollamaModel ?? 'ollama') : 'claude-sonnet-4-20250514';
+        provider === 'ollama' ? (ollamaModel ?? 'ollama') : 'claude-sonnet-4-6';
       insertBrief(result.content, { iocCount: iocs.length, model });
     } catch (err) {
       console.error('[ai-client] Failed to persist threat brief:', err);
