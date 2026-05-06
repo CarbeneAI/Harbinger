@@ -14,9 +14,9 @@ export function useFeeds() {
     loading.value = true;
     try {
       const [feedsRes, statsRes, mcpRes] = await Promise.all([
-        fetch(`${API_URL}/feeds`),
-        fetch(`${API_URL}/stats`),
-        fetch(`${API_URL}/mcp/status`),
+        fetch(`${API_URL}/feeds`, { credentials: 'include' }),
+        fetch(`${API_URL}/stats`, { credentials: 'include' }),
+        fetch(`${API_URL}/mcp/status`, { credentials: 'include' }),
       ]);
 
       if (feedsRes.ok) {
@@ -40,7 +40,7 @@ export function useFeeds() {
 
   const triggerPoll = async (): Promise<void> => {
     try {
-      await fetch(`${API_URL}/feeds/poll`, { method: 'POST' });
+      await fetch(`${API_URL}/feeds/poll`, { method: 'POST', credentials: 'include' });
       // Re-fetch after 3 second delay to let server update
       setTimeout(() => {
         fetchAll();

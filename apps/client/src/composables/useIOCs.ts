@@ -55,7 +55,9 @@ export function useIOCs() {
 
     try {
       const query = buildQuery(offset);
-      const response = await fetch(`${API_URL}/iocs?${query}`);
+      const response = await fetch(`${API_URL}/iocs?${query}`, {
+        credentials: 'include',
+      });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
 

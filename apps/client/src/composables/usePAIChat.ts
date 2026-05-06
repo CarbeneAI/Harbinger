@@ -1,5 +1,5 @@
 import { ref } from 'vue';
-import type { IOC, ChatMessage, QuickPrompts, AIProvider, AIProviderConfig } from '../types';
+import type { IOC, ChatMessage, QuickPrompts, AIProvider, AIProviderConfig, TokenUsage } from '../types';
 import { API_URL } from './useIOCs';
 
 export function usePAIChat() {
@@ -24,7 +24,8 @@ export function usePAIChat() {
     try {
       const ollamaUrl = providerConfig.value.ollamaUrl;
       const response = await fetch(
-        `${API_URL}/settings/ollama-models?ollamaUrl=${encodeURIComponent(ollamaUrl)}`
+        `${API_URL}/settings/ollama-models?ollamaUrl=${encodeURIComponent(ollamaUrl)}`,
+        { credentials: 'include' }
       );
       if (response.ok) {
         const data = await response.json();
@@ -61,7 +62,9 @@ export function usePAIChat() {
   // Load quick prompts
   const loadPrompts = async () => {
     try {
-      const response = await fetch(`${API_URL}/chat/prompts`);
+      const response = await fetch(`${API_URL}/chat/prompts`, {
+        credentials: 'include',
+      });
       if (response.ok) {
         quickPrompts.value = await response.json();
       }
@@ -90,6 +93,7 @@ export function usePAIChat() {
     try {
       const response = await fetch(`${API_URL}/chat`, {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: content,
@@ -153,6 +157,7 @@ export function usePAIChat() {
     try {
       const response = await fetch(`${API_URL}/briefs/generate`, {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           provider: briefProvider,
@@ -169,6 +174,8 @@ export function usePAIChat() {
           role: 'assistant',
           content: `**Threat Brief**\n\n${data.content}`,
           timestamp: Date.now(),
+          usage: data.usage as TokenUsage | undefined,
+          isBrief: true,
         };
         messages.value.push(assistantMessage);
       } else {
