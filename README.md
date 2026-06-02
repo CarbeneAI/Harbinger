@@ -12,7 +12,13 @@
 
 Harbinger is an open-source threat intelligence platform that ingests free public IOC feeds, stores them locally in SQLite, and surfaces them through an AI-powered analyst interface. Ask questions about threats in plain English. Keep your data on your network.
 
-Part of CarbeneAI's open-source security suite alongside [Specter](https://github.com/CarbeneAI/Specter) (SIEM dashboard) and [Talon](https://github.com/CarbeneAI/Talon) (penetration testing).
+## About CarbeneAI
+
+Harbinger is one of four open-source AI security proofs of concept published by CarbeneAI, alongside [Specter](https://github.com/CarbeneAI/Specter) (AI-assisted SIEM), [Talon](https://github.com/CarbeneAI/Talon) (AI-assisted offensive workflows), and [Forge](https://github.com/CarbeneAI/Forge) (AI operations platform). They are not the product. They exist so prospects can see CarbeneAI's founder, Clint P. Garrison, understands the end-to-end strategy of AI in security operations.
+
+CarbeneAI is a Fractional CTO + CISO + AI Strategy advisory practice for CEOs and Boards in risk-driven environments. Clint owns the strategy and risk seat at the client table; CarbeneAI's team and partner network deliver execution.
+
+Use this repo. Fork it. Improve it. For CarbeneAI advisory engagement: [carbene.ai](https://carbene.ai)
 
 ## Features
 
