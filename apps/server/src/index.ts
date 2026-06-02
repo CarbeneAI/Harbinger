@@ -5,7 +5,7 @@
 
 import { initDB, getStats, getFeeds, queryIOCs, getIOCById, getBriefs, getBriefById } from './db';
 import { startFeedScheduler, pollAllFeeds } from './feeds';
-import { sendChatMessage, generateThreatBrief, getOllamaModels, QUICK_PROMPTS } from './ai-client';
+import { sendChatMessage, generateThreatBrief, generateDailyThreatBrief, getOllamaModels, QUICK_PROMPTS } from './ai-client';
 import { getCveMcpStatus } from './mcp-client';
 
 // Initialize database
@@ -169,6 +169,19 @@ const server = Bun.serve({
         return respond(response);
       } catch (error) {
         console.error('Brief generation error:', error);
+        return respond({ success: false, error: 'Internal error' }, 500);
+      }
+    }
+
+    // POST /briefs/daily — last 24h hunt + detection guide
+    if (path === '/briefs/daily' && req.method === 'POST') {
+      try {
+        const body = await req.json() as any;
+        const { provider, ollamaUrl, ollamaModel } = body || {};
+        const response = await generateDailyThreatBrief(provider, ollamaUrl, ollamaModel);
+        return respond(response);
+      } catch (error) {
+        console.error('Daily brief generation error:', error);
         return respond({ success: false, error: 'Internal error' }, 500);
       }
     }

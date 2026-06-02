@@ -189,6 +189,49 @@ export function usePAIChat() {
     }
   };
 
+  // Generate daily (last 24h) hunt + detection brief via dedicated endpoint
+  const generateDailyBrief = async (
+    briefProvider: AIProvider,
+    ollamaUrl?: string,
+    ollamaModel?: string
+  ): Promise<void> => {
+    isLoading.value = true;
+    error.value = null;
+
+    try {
+      const response = await fetch(`${API_URL}/briefs/daily`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: briefProvider,
+          ollamaUrl: ollamaUrl || providerConfig.value.ollamaUrl,
+          ollamaModel: ollamaModel || providerConfig.value.ollamaModel,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.success && data.content) {
+        const assistantMessage: ChatMessage = {
+          role: 'assistant',
+          content: `**Daily Brief**\n\n${data.content}`,
+          timestamp: Date.now(),
+          usage: data.usage as TokenUsage | undefined,
+          isBrief: true,
+        };
+        messages.value.push(assistantMessage);
+      } else {
+        error.value = data.error || 'Failed to generate daily brief';
+      }
+    } catch (err) {
+      console.error('Generate daily brief error:', err);
+      error.value = 'Failed to generate daily brief';
+    } finally {
+      isLoading.value = false;
+    }
+  };
+
   // Clear chat history
   const clearChat = () => {
     messages.value = [];
@@ -209,6 +252,7 @@ export function usePAIChat() {
     sendMessage,
     quickAction,
     generateBrief,
+    generateDailyBrief,
     clearChat,
     provider,
     providerConfig,

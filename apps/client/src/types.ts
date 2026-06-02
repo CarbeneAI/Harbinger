@@ -48,6 +48,9 @@ export interface ThreatBrief {
   content: string;
   ioc_count?: number;
   model?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  cost_usd?: number;
 }
 
 export interface PAIChatMessage {
@@ -55,10 +58,20 @@ export interface PAIChatMessage {
   content: string;
 }
 
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
+  costUsd: number | null;
+  model: string;
+}
+
 export interface PAIChatResponse {
   success: boolean;
   content?: string;
   error?: string;
+  usage?: TokenUsage;
 }
 
 // Client-specific additions
@@ -66,6 +79,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+  usage?: TokenUsage;
+  isBrief?: boolean;
 }
 
 export interface QuickPrompts {

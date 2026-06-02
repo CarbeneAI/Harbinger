@@ -16,6 +16,8 @@ import {
   Settings,
   Save,
   Check,
+  Download,
+  CalendarDays,
 } from 'lucide-vue-next';
 import type { IOC, ChatMessage, QuickPrompts, AIProvider, AIProviderConfig } from '../types';
 import { formatRelativeTime } from '../types';
@@ -47,6 +49,7 @@ const emit = defineEmits<{
   (e: 'setProvider', provider: AIProvider): void;
   (e: 'setOllamaConfig', url: string, model: string): void;
   (e: 'generateBrief'): void;
+  (e: 'generateDailyBrief'): void;
 }>();
 
 const showSettings = ref(false);
@@ -108,6 +111,62 @@ const formatTime = (timestamp: number) => {
   });
 };
 
+const briefDateStr = (msg: ChatMessage): string => {
+  const date = new Date(msg.timestamp ?? Date.now());
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+const briefTitle = (msg: ChatMessage): string => {
+  return `Threat Intelligence Brief - ${briefDateStr(msg)}`;
+};
+
+const exportBriefAsPdf = (msg: ChatMessage) => {
+  const title = briefTitle(msg);
+
+  const originalTitle = document.title;
+  document.title = title;
+
+  const container = document.createElement('div');
+  container.id = 'print-brief';
+
+  const titleEl = document.createElement('h1');
+  titleEl.textContent = title;
+
+  const bodyEl = document.createElement('div');
+  bodyEl.className = 'brief-body';
+  bodyEl.innerHTML = renderMarkdown(msg.content);
+
+  container.appendChild(titleEl);
+  container.appendChild(bodyEl);
+  document.body.appendChild(container);
+
+  window.print();
+
+  document.title = originalTitle;
+  if (container.parentNode) container.parentNode.removeChild(container);
+};
+
+const exportBriefAsMarkdown = (msg: ChatMessage) => {
+  const title = briefTitle(msg);
+  // Strip the "**Threat Brief**" / "**Daily Brief**" prefix the composable
+  // prepends, since we already have the title at the top of the file.
+  const body = msg.content.replace(/^\*\*(?:Threat|Daily) Brief\*\*\s*\n\n?/, '');
+  const markdown = `# ${title}\n\n${body}\n`;
+
+  const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${title}.md`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
 // Type badge helper for context display
 function getTypeBadgeClass(type: string): string {
   const map: Record<string, string> = {
@@ -123,7 +182,6 @@ function getTypeBadgeClass(type: string): string {
 
 const quickActions = [
   { key: 'analyze' as const, label: 'Analyze',      icon: Search   },
-  { key: 'brief'   as const, label: 'Threat Brief', icon: FileText },
   { key: 'hunt'    as const, label: 'Hunt Queries', icon: Terminal },
   { key: 'mitre'   as const, label: 'MITRE Map',    icon: Map      },
 ];
@@ -176,14 +234,24 @@ const quickActions = [
             <Settings class="w-4 h-4" />
           </button>
 
-          <!-- Generate Brief button -->
+          <!-- Generate Threat Brief button -->
           <button
             class="flex items-center gap-1 px-2 py-1 text-xs rounded border border-border-primary text-text-secondary hover:text-accent-blue hover:border-accent-blue transition-colors"
-            title="Generate threat brief from current IOC landscape"
+            title="Threat brief from the most recent 100 IOCs (executive summary + hunt queries)"
             @click="emit('generateBrief')"
           >
             <FileText class="w-3 h-3" />
-            <span>Brief</span>
+            <span>Threat Brief</span>
+          </button>
+
+          <!-- Generate Daily Brief button (last 24h hunt + detection guide) -->
+          <button
+            class="flex items-center gap-1 px-2 py-1 text-xs rounded border border-border-primary text-text-secondary hover:text-accent-blue hover:border-accent-blue transition-colors"
+            title="Daily hunt + detection guide for the last 24 hours (Wazuh + Chronicle hunt queries AND detection rules)"
+            @click="emit('generateDailyBrief')"
+          >
+            <CalendarDays class="w-3 h-3" />
+            <span>Daily Brief</span>
           </button>
 
           <!-- Clear chat -->
@@ -316,6 +384,41 @@ const quickActions = [
             <span class="text-xs opacity-60 mt-1 block">
               {{ formatTime(msg.timestamp) }}
             </span>
+
+            <!-- Brief footer: export actions + optional cost details -->
+            <div
+              v-if="msg.isBrief"
+              class="mt-2 pt-2 border-t border-border-primary flex items-center justify-between gap-2 text-xs text-text-tertiary flex-wrap"
+            >
+              <div class="flex items-center gap-3">
+                <button
+                  class="flex items-center gap-1 hover:text-accent-blue transition-colors"
+                  title="Save brief as PDF"
+                  @click="exportBriefAsPdf(msg)"
+                >
+                  <Download class="w-3 h-3" />
+                  <span>Save as PDF</span>
+                </button>
+                <button
+                  class="flex items-center gap-1 hover:text-accent-blue transition-colors"
+                  title="Save brief as Markdown"
+                  @click="exportBriefAsMarkdown(msg)"
+                >
+                  <FileText class="w-3 h-3" />
+                  <span>Save as Markdown</span>
+                </button>
+              </div>
+              <div v-if="msg.usage" class="flex items-center gap-1.5">
+                <span class="font-mono">{{ msg.usage.model }}</span>
+                <span class="opacity-40">|</span>
+                <span v-if="msg.usage.costUsd != null" class="font-mono text-text-secondary">
+                  ${{ msg.usage.costUsd.toFixed(4) }}
+                </span>
+                <span v-else class="font-mono">cost n/a</span>
+                <span class="opacity-40">|</span>
+                <span class="font-mono">{{ msg.usage.inputTokens.toLocaleString() }} in + {{ msg.usage.outputTokens.toLocaleString() }} out</span>
+              </div>
+            </div>
           </div>
 
           <!-- User avatar -->
@@ -427,3 +530,106 @@ const quickActions = [
     </div>
   </div>
 </template>
+
+<style>
+@media print {
+  @page {
+    size: letter;
+    margin: 0.7in;
+  }
+  body > *:not(#print-brief) {
+    display: none !important;
+  }
+  #print-brief {
+    color: #000;
+    background: #fff;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 11pt;
+    line-height: 1.5;
+    max-width: 7.1in;
+    margin: 0 auto;
+  }
+  #print-brief h1 {
+    font-size: 18pt;
+    font-weight: 600;
+    margin: 0 0 16pt 0;
+    padding-bottom: 6pt;
+    border-bottom: 1pt solid #444;
+  }
+  #print-brief h2 {
+    font-size: 13pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5pt;
+    margin: 14pt 0 6pt 0;
+    border-bottom: 0.5pt solid #888;
+    padding-bottom: 2pt;
+  }
+  #print-brief h3 {
+    font-size: 11.5pt;
+    font-weight: 700;
+    margin: 10pt 0 4pt 0;
+  }
+  #print-brief p {
+    margin: 0 0 6pt 0;
+  }
+  #print-brief ul,
+  #print-brief ol {
+    margin: 4pt 0 8pt 0;
+    padding-left: 18pt;
+  }
+  #print-brief li {
+    margin-bottom: 2pt;
+  }
+  #print-brief code {
+    font-family: Menlo, Monaco, "Courier New", monospace;
+    font-size: 10pt;
+    background: #f0f0f0;
+    padding: 1pt 3pt;
+    border-radius: 2pt;
+  }
+  #print-brief pre {
+    background: #f4f4f4;
+    padding: 8pt;
+    border-radius: 3pt;
+    font-size: 9.5pt;
+    overflow-x: auto;
+    page-break-inside: avoid;
+  }
+  #print-brief pre code {
+    background: transparent;
+    padding: 0;
+  }
+  #print-brief a {
+    color: #0050aa;
+    text-decoration: none;
+  }
+  #print-brief table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 8pt 0;
+    page-break-inside: avoid;
+  }
+  #print-brief th,
+  #print-brief td {
+    border: 0.5pt solid #888;
+    padding: 4pt 6pt;
+    text-align: left;
+    font-size: 10pt;
+  }
+  #print-brief th {
+    background: #eee;
+  }
+  #print-brief blockquote {
+    border-left: 3pt solid #888;
+    margin: 6pt 0;
+    padding: 2pt 0 2pt 10pt;
+    color: #444;
+  }
+  #print-brief hr {
+    border: none;
+    border-top: 0.5pt solid #888;
+    margin: 12pt 0;
+  }
+}
+</style>

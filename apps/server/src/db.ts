@@ -66,13 +66,31 @@ export function initDB(): Database {
   // ── Threat briefs table ───────────────────────────────────────────────────
   db.exec(`
     CREATE TABLE IF NOT EXISTS threat_briefs (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      created_at INTEGER NOT NULL,
-      content    TEXT    NOT NULL,
-      ioc_count  INTEGER,
-      model      TEXT
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at   INTEGER NOT NULL,
+      content      TEXT    NOT NULL,
+      ioc_count    INTEGER,
+      model        TEXT,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      cost_usd     REAL
     );
   `);
+
+  // Migrate existing DB: add cost columns if they don't exist yet
+  const briefCols = db
+    .query<{ name: string }, []>(`PRAGMA table_info(threat_briefs)`)
+    .all()
+    .map((r) => r.name);
+  if (!briefCols.includes('input_tokens')) {
+    db.exec(`ALTER TABLE threat_briefs ADD COLUMN input_tokens INTEGER;`);
+  }
+  if (!briefCols.includes('output_tokens')) {
+    db.exec(`ALTER TABLE threat_briefs ADD COLUMN output_tokens INTEGER;`);
+  }
+  if (!briefCols.includes('cost_usd')) {
+    db.exec(`ALTER TABLE threat_briefs ADD COLUMN cost_usd REAL;`);
+  }
 
   return db;
 }
@@ -200,6 +218,8 @@ export interface QueryIOCsParams {
   sortDir?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
+  /** Unix-ms cutoff. When set, only return IOCs with last_seen >= since. */
+  since?: number;
 }
 
 export function queryIOCs(params: QueryIOCsParams = {}): { iocs: IOC[]; total: number } {
@@ -213,6 +233,7 @@ export function queryIOCs(params: QueryIOCsParams = {}): { iocs: IOC[]; total: n
     sortDir = 'desc',
     limit = 50,
     offset = 0,
+    since,
   } = params;
 
   // Whitelist sort columns to prevent SQL injection
@@ -239,6 +260,10 @@ export function queryIOCs(params: QueryIOCsParams = {}): { iocs: IOC[]; total: n
   if (feed) {
     conditions.push('f.name = ?');
     args.push(feed);
+  }
+  if (typeof since === 'number') {
+    conditions.push('i.last_seen >= ?');
+    args.push(since);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -355,15 +380,32 @@ export function getStats(): IOCStats {
 
 export function insertBrief(
   content: string,
-  opts: { iocCount?: number; model?: string } = {},
+  opts: {
+    iocCount?: number;
+    model?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    costUsd?: number;
+  } = {},
 ): ThreatBrief {
   const d = getDB();
   const now = Date.now();
-  const result = d.query<{ id: number }, [number, string, number | null, string | null]>(`
-    INSERT INTO threat_briefs (created_at, content, ioc_count, model)
-    VALUES (?, ?, ?, ?)
+  const result = d.query<
+    { id: number },
+    [number, string, number | null, string | null, number | null, number | null, number | null]
+  >(`
+    INSERT INTO threat_briefs (created_at, content, ioc_count, model, input_tokens, output_tokens, cost_usd)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     RETURNING id
-  `).get(now, content, opts.iocCount ?? null, opts.model ?? null);
+  `).get(
+    now,
+    content,
+    opts.iocCount   ?? null,
+    opts.model      ?? null,
+    opts.inputTokens  != null ? opts.inputTokens  : null,
+    opts.outputTokens != null ? opts.outputTokens : null,
+    opts.costUsd      != null ? opts.costUsd      : null,
+  );
 
   return getBriefById(result!.id)!;
 }

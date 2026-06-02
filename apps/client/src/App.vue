@@ -21,6 +21,7 @@ const {
   sendMessage,
   quickAction,
   generateBrief,
+  generateDailyBrief,
   clearChat,
   provider,
   providerConfig,
@@ -94,6 +95,10 @@ const handleSetOllamaConfig = (url: string, model: string) => {
 
 const handleGenerateBrief = () => {
   generateBrief(provider.value, providerConfig.value.ollamaUrl, providerConfig.value.ollamaModel);
+};
+
+const handleGenerateDailyBrief = () => {
+  generateDailyBrief(provider.value, providerConfig.value.ollamaUrl, providerConfig.value.ollamaModel);
 };
 
 // --- Feed poll ---
@@ -183,6 +188,7 @@ const startResize = (e: MouseEvent) => {
           @set-provider="handleSetProvider"
           @set-ollama-config="handleSetOllamaConfig"
           @generate-brief="handleGenerateBrief"
+          @generate-daily-brief="handleGenerateDailyBrief"
         />
       </div>
     </div>
