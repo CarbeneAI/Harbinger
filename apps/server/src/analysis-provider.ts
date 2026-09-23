@@ -90,9 +90,13 @@ export async function sendClaudeCliMessage(
     };
   }
 
-  const model = process.env.CLAUDE_CLI_MODEL ?? 'claude-sonnet-5';
+  const model = process.env.CLAUDE_CLI_MODEL ?? 'sonnet';
   const bin = process.env.CLAUDE_CLI_BIN ?? '/opt/homebrew/bin/claude';
   const timeoutMs = Number(process.env.CLAUDE_CLI_TIMEOUT_MS ?? 900_000);
+  // Run from a neutral directory. The CLI walks UP from its cwd collecting
+  // CLAUDE.md files, so starting in $HOME pulls the operator's personal global
+  // instructions into every threat-intel prompt.
+  const cwd = process.env.CLAUDE_CLI_CWD ?? '/tmp';
 
   const history = chatHistory
     .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
@@ -103,12 +107,23 @@ export async function sendClaudeCliMessage(
 
   // Trap 1: unset the API key vars so the CLI uses the subscription session.
   // Trap 2: --disallowedTools is variadic, so --output-format MUST follow it.
+  // Trap 4 (found 2026-09-23): by default the CLI loads the operator's personal
+  //   context — global CLAUDE.md, the PAI memory system, user-level agents —
+  //   into every session. A haiku probe replied "I've loaded the full PAI
+  //   context, CLAUDE.md instructions, memory system". That is the operator's
+  //   private career/homelab/business context leaking into threat-intel
+  //   analysis, and those instructions can fight the analyst prompt. Running
+  //   from a neutral cwd with --setting-sources project yields a verified clean
+  //   session: "No CLAUDE.md files have been loaded, no memory files are in
+  //   context."
   const remote = [
     'export PATH=$HOME/.bun/bin:/opt/homebrew/bin:$PATH;',
     'unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN;',
+    `cd ${cwd} &&`,
     bin,
     '-p',
     '--model', model,
+    '--setting-sources project',
     '--disallowedTools Bash Edit Write Read WebSearch WebFetch',
     '--output-format text',
     '--no-session-persistence',
