@@ -45,8 +45,20 @@ const server = Bun.serve({
     const path = url.pathname;
     const origin = req.headers.get('Origin');
 
-    // Log authenticated user from Authentik forward-auth headers (injected by Traefik).
-    // Traefik strips any forged X-Authentik-* before this point.
+    // Best-effort request attribution. NOT an identity you may trust.
+    //
+    // Harbinger is NOT behind Authentik. The Round 2D forward-auth wrap was
+    // rolled back 2026-05-06 (it broke cross-origin fetches: empty top bar, no
+    // IOC data), and harbinger.home.carbeneai.com answers 200 with no auth.
+    // Traefik defines a harbinger-strip-incoming-authentik-headers middleware
+    // but NO router references it, so nothing strips a forged X-Authentik-*
+    // header -- any client that can reach this host can set akUser to anything.
+    //
+    // That is acceptable ONLY because this value is used for a log line and
+    // nothing else. Do not gate a route, own a record, or make any authorization
+    // decision on it without first putting the service behind the gate AND
+    // applying the strip middleware. Specter does trust its equivalent value
+    // (mute createdBy) and is correctly wrapped; this service is not.
     const akUser = req.headers.get('X-Authentik-Email') || req.headers.get('X-Authentik-Username') || '<unauthenticated>';
     console.log(`[req] ${req.method} ${path} user=${akUser}`);
 
