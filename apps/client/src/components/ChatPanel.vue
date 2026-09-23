@@ -18,6 +18,7 @@ import {
   Check,
   Download,
   CalendarDays,
+  CalendarRange,
 } from 'lucide-vue-next';
 import type { IOC, ChatMessage, QuickPrompts, AIProvider, AIProviderConfig } from '../types';
 import { formatRelativeTime } from '../types';
@@ -50,6 +51,7 @@ const emit = defineEmits<{
   (e: 'setOllamaConfig', url: string, model: string): void;
   (e: 'generateBrief'): void;
   (e: 'generateDailyBrief'): void;
+  (e: 'generateWeeklyBrief'): void;
 }>();
 
 const showSettings = ref(false);
@@ -252,6 +254,16 @@ const quickActions = [
           >
             <CalendarDays class="w-3 h-3" />
             <span>Daily Brief</span>
+          </button>
+
+          <!-- Generate Weekly Strategic Brief (7-day rollup, leadership lens) -->
+          <button
+            class="flex items-center gap-1 px-2 py-1 text-xs rounded border border-border-primary text-text-secondary hover:text-accent-blue hover:border-accent-blue transition-colors"
+            title="Weekly strategic synthesis of the last 7 days for CISO/CTO: campaign momentum, CVE landscape, strategic recommendations"
+            @click="emit('generateWeeklyBrief')"
+          >
+            <CalendarRange class="w-3 h-3" />
+            <span>Weekly Brief</span>
           </button>
 
           <!-- Clear chat -->

@@ -232,6 +232,49 @@ export function usePAIChat() {
     }
   };
 
+  // Generate weekly strategic brief (7-day rollup, leadership lens)
+  const generateWeeklyBrief = async (
+    briefProvider: AIProvider,
+    ollamaUrl?: string,
+    ollamaModel?: string
+  ): Promise<void> => {
+    isLoading.value = true;
+    error.value = null;
+
+    try {
+      const response = await fetch(`${API_URL}/briefs/weekly-strategic`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: briefProvider,
+          ollamaUrl: ollamaUrl || providerConfig.value.ollamaUrl,
+          ollamaModel: ollamaModel || providerConfig.value.ollamaModel,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.success && data.content) {
+        const assistantMessage: ChatMessage = {
+          role: 'assistant',
+          content: `**Weekly Brief**\n\n${data.content}`,
+          timestamp: Date.now(),
+          usage: data.usage as TokenUsage | undefined,
+          isBrief: true,
+        };
+        messages.value.push(assistantMessage);
+      } else {
+        error.value = data.error || 'Failed to generate weekly brief';
+      }
+    } catch (err) {
+      console.error('Generate weekly brief error:', err);
+      error.value = 'Failed to generate weekly brief';
+    } finally {
+      isLoading.value = false;
+    }
+  };
+
   // Clear chat history
   const clearChat = () => {
     messages.value = [];
@@ -253,6 +296,7 @@ export function usePAIChat() {
     quickAction,
     generateBrief,
     generateDailyBrief,
+    generateWeeklyBrief,
     clearChat,
     provider,
     providerConfig,

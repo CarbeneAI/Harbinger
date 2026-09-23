@@ -28,6 +28,8 @@
 import type { IOC } from './types';
 import { queryIOCs } from './db';
 import { callCveMcpTool } from './mcp-client';
+import { lookupCveExposure, formatCveExposure, isWazuhConfigured } from './wazuh-client';
+import { getExploitSignals, formatExploitSignal } from './exploit-signal';
 
 /** Max IOCs enriched per request. Keeps third-party API usage bounded. */
 const MAX_ENRICHED_IOCS = 5;
@@ -118,16 +120,14 @@ export function isPrivateIndicator(value: string): boolean {
 // Enrichment
 // ---------------------------------------------------------------------------
 
-/** Which cve-mcp tools apply to each IOC type. */
+/** Which cve-mcp tools apply to each IOC type.
+ *
+ * CVEs are deliberately absent: they are handled by Wazuh (environment
+ * exposure) plus KEV/EPSS (exploitation signal), which need no Python server
+ * and answer a better question than the generic NVD lookup did.
+ */
 function toolsForIOC(ioc: IOC): Array<{ tool: string; args: Record<string, unknown> }> {
   switch (ioc.ioc_type) {
-    case 'cve':
-      return [
-        { tool: 'lookup_cve',          args: { cve_id: ioc.value } },
-        { tool: 'get_epss_score',      args: { cve_ids: ioc.value } },
-        { tool: 'check_kev',           args: { cve_id: ioc.value } },
-        { tool: 'get_attack_mapping',  args: { cve_id: ioc.value } },
-      ];
     case 'ip':
       return [
         { tool: 'check_ip_reputation', args: { ip: ioc.value } },
@@ -294,16 +294,91 @@ export function buildRelatedIOCBlock(
 }
 
 /**
+ * CVE enrichment: environment exposure (Wazuh) + exploitation signal (KEV/EPSS).
+ *
+ * This is the pairing that makes a brief actionable. Wazuh answers "do I have
+ * it"; KEV/EPSS answer "is anyone exploiting it". Present AND exploited is the
+ * top of the patch queue; absent but exploited is watch-only.
+ *
+ * CVE IDs are public identifiers, so the privacy filter does not apply here —
+ * nothing host-specific leaves the network. The Wazuh query is to your own
+ * LAN appliance; only the CVE ID goes to CISA/FIRST.
+ */
+async function buildCveBlock(iocs: IOC[]): Promise<string> {
+  const cves = iocs
+    .filter((i) => i.ioc_type === 'cve')
+    .map((i) => i.value.trim().toUpperCase())
+    .filter((v) => /^CVE-\d{4}-\d{4,}$/.test(v));
+
+  if (cves.length === 0) return '';
+
+  const unique = Array.from(new Set(cves)).slice(0, MAX_ENRICHED_IOCS);
+
+  const [signals, exposures] = await Promise.all([
+    getExploitSignals(unique),
+    isWazuhConfigured()
+      ? Promise.all(unique.map((c) => lookupCveExposure(c)))
+      : Promise.resolve(null),
+  ]);
+
+  const sections: string[] = ['\n## CVE Analysis (fetched by Harbinger)\n'];
+
+  for (const [idx, cve] of unique.entries()) {
+    sections.push(`### ${cve}\n`);
+
+    const exposure = exposures?.[idx];
+    if (exposure) {
+      sections.push(formatCveExposure(exposure));
+    } else {
+      sections.push(
+        '_Environment exposure NOT CHECKED — Wazuh is not configured. Do not ' +
+          'state whether this CVE is present in the environment._',
+      );
+    }
+
+    const sig = signals.get(cve);
+    sections.push('', sig ? formatExploitSignal(sig) : 'Exploitation signal: unavailable.');
+
+    // The prioritisation call, stated explicitly so the model does not have to
+    // infer it (and cannot get it backwards).
+    if (exposure?.present && sig?.inKev) {
+      sections.push(
+        '', '> **PRIORITY: PATCH NOW.** Present in the environment AND in CISA KEV ' +
+          '(confirmed exploitation in the wild).',
+      );
+    } else if (exposure?.present) {
+      sections.push(
+        '', '> **Present in the environment.** Not in KEV, so schedule rather than ' +
+          'emergency-patch, weighted by the EPSS score above.',
+      );
+    } else if (exposure && !exposure.present && sig?.inKev) {
+      sections.push(
+        '', '> **Not in the environment.** In KEV, so worth a detection rule and ' +
+          'a watch, but there is nothing here to patch.',
+      );
+    }
+    sections.push('');
+  }
+
+  return sections.join('\n');
+}
+
+/**
  * Build the full pre-fetched context block for a chat request: related local
- * IOCs plus third-party enrichment. Safe to call with no IOC context.
+ * IOCs, CVE exposure/exploitation, and third-party enrichment. Safe to call
+ * with no IOC context.
  */
 export async function buildPrefetchedContext(
   userMessage: string,
   iocContext?: IOC[],
 ): Promise<string> {
   const related = buildRelatedIOCBlock(userMessage, iocContext);
-  const enrichment = await buildEnrichmentBlock(iocContext ?? []);
-  const combined = [related, enrichment].filter(Boolean).join('\n');
+  const [cveBlock, enrichment] = await Promise.all([
+    buildCveBlock(iocContext ?? []),
+    buildEnrichmentBlock(iocContext ?? []),
+  ]);
+
+  const combined = [related, cveBlock, enrichment].filter(Boolean).join('\n');
   if (!combined) return '';
 
   return (

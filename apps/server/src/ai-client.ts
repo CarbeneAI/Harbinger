@@ -13,6 +13,7 @@ import type { PAIChatMessage, PAIChatResponse, TokenUsage, IOC, SeverityLevel } 
 import { queryIOCs, insertBrief } from './db';
 import { callCveMcpTool } from './mcp-client';
 import { buildPrefetchedContext } from './prefetch';
+import { getEnvironmentExposureSummary } from './wazuh-client';
 import {
   resolveAnalysisProvider,
   sendClaudeCliMessage,
@@ -724,7 +725,8 @@ export async function generateThreatBrief(
   }
 
   const contextMarkdown = lines.join('\n');
-  const prompt = QUICK_PROMPTS.brief + '\n\n' + contextMarkdown;
+  const exposure = await getEnvironmentExposureSummary();
+  const prompt = QUICK_PROMPTS.brief + '\n\n' + exposure + '\n' + contextMarkdown;
 
   const result = await sendChatMessage(prompt, [], undefined, undefined, provider, ollamaUrl, ollamaModel);
 
@@ -812,6 +814,38 @@ const DAILY_BRIEF_PROMPT =
   '**<Second campaign>:** <same>\n\n' +
   'End the document after Campaign Attribution. Do not add closing remarks, sign-offs, or summary paragraphs.';
 
+// Reads the N most recent archived briefs and returns their campaign headings
+// grouped by date. Used to inject a "recently covered" list into the prompt so
+// the model demotes carryover campaigns instead of re-featuring them daily.
+// Fails open: any error returns '' so the brief still ships.
+function getRecentBriefHeadings(days: number): string {
+  try {
+    const dir = join(homedir(), '.harbinger', 'briefs');
+    const files = readdirSync(dir)
+      .filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
+      .sort()
+      .reverse()
+      .slice(0, days);
+    if (files.length === 0) return '';
+
+    const blocks: string[] = [];
+    for (const file of files) {
+      const date = file.replace(/\.md$/, '');
+      const body = readFileSync(join(dir, file), 'utf8');
+      const headings = body
+        .split('\n')
+        .filter((l) => l.startsWith('### '))
+        .map((l) => l.replace(/^###\s+/, '').trim())
+        .filter((h) => h.length > 0);
+      if (headings.length === 0) continue;
+      blocks.push(`${date}:\n${headings.map((h) => `  - ${h}`).join('\n')}`);
+    }
+    return blocks.join('\n');
+  } catch {
+    return '';
+  }
+}
+
 export async function generateDailyThreatBrief(
   provider: AIProvider,
   ollamaUrl?: string,
@@ -860,7 +894,16 @@ export async function generateDailyThreatBrief(
   }
 
   const contextMarkdown = lines.join('\n');
-  const prompt = DAILY_BRIEF_PROMPT + '\n\n' + contextMarkdown;
+
+  // Campaign headings from the past 7 briefs, so the model demotes carryover
+  // campaigns instead of re-featuring them daily (the FRESHNESS RULE).
+  const recentHeadings = getRecentBriefHeadings(7);
+  const recentBlock = recentHeadings
+    ? `## Recently Covered (past 7 briefs — do not re-feature unless materially new)\n${recentHeadings}\n\n`
+    : '';
+
+  const exposure = await getEnvironmentExposureSummary();
+  const prompt = DAILY_BRIEF_PROMPT + '\n\n' + recentBlock + exposure + '\n' + contextMarkdown;
 
   const result = await sendChatMessage(prompt, [], undefined, undefined, provider, ollamaUrl, ollamaModel);
 
@@ -986,7 +1029,8 @@ export async function generateWeeklyStrategicBrief(
 
   const archiveBlock = `## Past 7 Daily Briefs (newest first)\n\n${briefArchive}\n`;
 
-  const prompt = WEEKLY_STRATEGIC_PROMPT + '\n\n' + iocSummary + '\n' + archiveBlock;
+  const exposure = await getEnvironmentExposureSummary();
+  const prompt = WEEKLY_STRATEGIC_PROMPT + '\n\n' + exposure + '\n' + iocSummary + '\n' + archiveBlock;
 
   const result = await sendChatMessage(prompt, [], undefined, undefined, provider, ollamaUrl, ollamaModel);
 
