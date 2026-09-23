@@ -6,15 +6,16 @@ import {
   CheckCircle,
   XCircle,
   Loader2,
-  Sparkles,
+  ShieldCheck,
+  Radar,
   CircleSlash,
 } from 'lucide-vue-next';
-import type { IOCStats, Feed, McpStatus, SeverityLevel, IOCType } from '../types';
+import type { IOCStats, Feed, EnrichmentStatus, SeverityLevel, IOCType } from '../types';
 
 const props = defineProps<{
   stats: IOCStats | null;
   feeds: Feed[];
-  mcpStatus: McpStatus | null;
+  enrichmentStatus: EnrichmentStatus | null;
 }>();
 
 const emit = defineEmits<{
@@ -28,7 +29,8 @@ const emit = defineEmits<{
 // so the template doesn't need access to `window` at render time.
 type ActivePopover =
   | { kind: 'feed'; feed: Feed; top: number; right: number }
-  | { kind: 'mcp'; status: McpStatus; top: number; right: number }
+  | { kind: 'wazuh'; status: EnrichmentStatus; top: number; right: number }
+  | { kind: 'exploit'; status: EnrichmentStatus; top: number; right: number }
   | null;
 
 const popover = ref<ActivePopover>(null);
@@ -43,10 +45,14 @@ function showFeedPopover(event: MouseEvent, feed: Feed) {
   };
 }
 
-function showMcpPopover(event: MouseEvent, status: McpStatus) {
+function showEnrichPopover(
+  event: MouseEvent,
+  kind: 'wazuh' | 'exploit',
+  status: EnrichmentStatus,
+) {
   const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
   popover.value = {
-    kind: 'mcp',
+    kind,
     status,
     top: rect.bottom + 8,
     right: window.innerWidth - rect.right,
@@ -170,30 +176,48 @@ function getSeverityCount(severity: SeverityLevel): number {
           </div>
         </template>
 
-        <!-- cve-mcp enrichment status -->
+        <!-- Environment exposure (Wazuh vulnerability inventory) -->
         <div
-          v-if="mcpStatus"
+          v-if="enrichmentStatus"
           class="flex items-center gap-1 pl-2 border-l border-border-primary cursor-help"
-          @mouseenter="showMcpPopover($event, mcpStatus)"
+          @mouseenter="showEnrichPopover($event, 'wazuh', enrichmentStatus)"
           @mouseleave="hidePopover"
         >
           <CircleSlash
-            v-if="!mcpStatus.enabled"
+            v-if="!enrichmentStatus.wazuh.configured"
             class="w-4 h-4 text-text-tertiary"
           />
-          <Sparkles
-            v-else-if="mcpStatus.connected"
+          <ShieldCheck
+            v-else-if="enrichmentStatus.wazuh.connected"
             class="w-4 h-4 text-accent-green"
           />
           <XCircle
             v-else
             class="w-4 h-4 text-severity-critical"
           />
-          <span class="text-xs text-text-tertiary font-mono">cve-mcp</span>
+          <span class="text-xs text-text-tertiary font-mono">exposure</span>
           <span
-            v-if="mcpStatus.enabled && mcpStatus.connected && mcpStatus.toolCount"
+            v-if="enrichmentStatus.wazuh.connected && enrichmentStatus.wazuh.criticalHigh"
             class="text-xs text-text-tertiary font-mono opacity-60"
-          >({{ mcpStatus.toolCount }})</span>
+          >({{ enrichmentStatus.wazuh.criticalHigh }})</span>
+        </div>
+
+        <!-- Exploitation signal (CISA KEV + FIRST EPSS) -->
+        <div
+          v-if="enrichmentStatus"
+          class="flex items-center gap-1 cursor-help"
+          @mouseenter="showEnrichPopover($event, 'exploit', enrichmentStatus)"
+          @mouseleave="hidePopover"
+        >
+          <Radar
+            v-if="enrichmentStatus.exploit.connected"
+            class="w-4 h-4 text-accent-green"
+          />
+          <XCircle
+            v-else
+            class="w-4 h-4 text-severity-critical"
+          />
+          <span class="text-xs text-text-tertiary font-mono">kev/epss</span>
         </div>
       </div>
 
@@ -213,7 +237,7 @@ function getSeverityCount(severity: SeverityLevel): number {
     <div
       v-if="popover"
       class="fixed z-[9999] rounded-md bg-bg-secondary border border-border-primary shadow-2xl text-xs text-text-primary pointer-events-none"
-      :class="popover.kind === 'mcp' ? 'w-80 p-3' : 'w-64 p-2'"
+      :class="popover.kind === 'feed' ? 'w-64 p-2' : 'w-80 p-3'"
       :style="{
         top: popover.top + 'px',
         left: 'auto',
@@ -236,40 +260,57 @@ function getSeverityCount(severity: SeverityLevel): number {
         </div>
       </template>
 
-      <!-- cve-mcp popover -->
-      <template v-else-if="popover.kind === 'mcp'">
-        <div class="font-mono font-semibold mb-2 text-text-primary">cve-mcp enrichment</div>
-        <div v-if="!popover.status.enabled" class="text-text-tertiary leading-relaxed">
-          Disabled. Set <span class="font-mono text-accent-blue">CVE_MCP_ENABLED=true</span> in <span class="font-mono">.env</span> to enable.
+      <!-- Environment exposure popover -->
+      <template v-else-if="popover.kind === 'wazuh'">
+        <div class="font-mono font-semibold mb-2 text-text-primary">Environment exposure</div>
+        <div v-if="!popover.status.wazuh.configured" class="text-text-tertiary leading-relaxed">
+          Not configured. Set <span class="font-mono text-accent-blue">WAZUH_DASHBOARD_URL</span>
+          and <span class="font-mono text-accent-blue">WAZUH_DASHBOARD_PASSWORD</span> in
+          <span class="font-mono">.env</span> to enable "do I actually have this CVE?" lookups.
         </div>
-        <div v-else-if="popover.status.connected">
-          <div class="text-accent-green mb-2 font-mono">
-            ✓ Connected — {{ popover.status.toolCount }} on-demand tools
+        <div v-else-if="popover.status.wazuh.connected">
+          <div class="text-accent-green mb-2 font-mono">✓ Connected — Wazuh vulnerability inventory</div>
+          <div class="text-text-tertiary leading-relaxed mb-2">
+            Every CVE is checked against what is actually installed on your hosts: affected
+            machine, package, installed version, and the fix version.
           </div>
-          <div class="text-text-tertiary leading-relaxed">
-            The AI analyst can call these third-party threat-intel APIs during chat and brief generation:
-          </div>
-          <ul class="mt-2 grid grid-cols-2 gap-x-2 gap-y-0.5 text-text-secondary font-mono text-[11px]">
-            <li>• NVD</li>
-            <li>• EPSS</li>
-            <li>• CISA KEV</li>
-            <li>• MITRE ATT&amp;CK</li>
-            <li>• AbuseIPDB</li>
-            <li>• GreyNoise</li>
-            <li>• Shodan</li>
-            <li>• VirusTotal</li>
-            <li>• URLScan</li>
-            <li>• crt.sh</li>
+          <ul class="text-text-secondary font-mono text-[11px] space-y-0.5">
+            <li>• {{ popover.status.wazuh.distinctCves }} distinct CVEs in inventory</li>
+            <li>• {{ popover.status.wazuh.criticalHigh }} Critical/High present</li>
+            <li>• {{ popover.status.wazuh.hosts }} monitored hosts</li>
           </ul>
         </div>
         <div v-else>
           <div class="text-severity-critical mb-1 font-mono">✗ Unreachable</div>
-          <div v-if="popover.status.lastError" class="text-text-tertiary break-words">{{ popover.status.lastError }}</div>
-          <div v-else class="text-text-tertiary">
-            Python server not responding. Check <span class="font-mono">~/Dev/cve-mcp-server</span> install.
+          <div v-if="popover.status.wazuh.lastError" class="text-text-tertiary break-words">{{ popover.status.wazuh.lastError }}</div>
+          <div class="text-text-tertiary mt-1 leading-relaxed">
+            Briefs will say the exposure check did not run rather than guess.
           </div>
         </div>
       </template>
+
+      <!-- Exploitation signal popover -->
+      <template v-else-if="popover.kind === 'exploit'">
+        <div class="font-mono font-semibold mb-2 text-text-primary">Exploitation signal</div>
+        <div v-if="popover.status.exploit.connected">
+          <div class="text-accent-green mb-2 font-mono">
+            ✓ CISA KEV — {{ popover.status.exploit.kevEntries }} entries cached
+          </div>
+          <div class="text-text-tertiary leading-relaxed mb-2">
+            Public sources, no API key required. Paired with environment exposure:
+            present <span class="text-text-secondary">AND</span> in KEV = patch now.
+          </div>
+          <ul class="text-text-secondary font-mono text-[11px] space-y-0.5">
+            <li>• CISA Known Exploited Vulnerabilities</li>
+            <li>• FIRST.org EPSS (30-day exploit probability)</li>
+          </ul>
+        </div>
+        <div v-else>
+          <div class="text-severity-critical mb-1 font-mono">✗ Unreachable</div>
+          <div v-if="popover.status.exploit.lastError" class="text-text-tertiary break-words">{{ popover.status.exploit.lastError }}</div>
+        </div>
+      </template>
+
     </div>
   </Teleport>
 </template>

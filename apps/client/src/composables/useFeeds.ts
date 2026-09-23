@@ -1,11 +1,11 @@
 import { ref, onUnmounted } from 'vue';
-import type { Feed, IOCStats, McpStatus } from '../types';
+import type { Feed, IOCStats, EnrichmentStatus } from '../types';
 import { API_URL } from './useIOCs';
 
 export function useFeeds() {
   const feeds = ref<Feed[]>([]);
   const stats = ref<IOCStats | null>(null);
-  const mcpStatus = ref<McpStatus | null>(null);
+  const enrichmentStatus = ref<EnrichmentStatus | null>(null);
   const loading = ref(false);
 
   let pollInterval: ReturnType<typeof setInterval> | null = null;
@@ -13,10 +13,10 @@ export function useFeeds() {
   const fetchAll = async (): Promise<void> => {
     loading.value = true;
     try {
-      const [feedsRes, statsRes, mcpRes] = await Promise.all([
+      const [feedsRes, statsRes, enrichRes] = await Promise.all([
         fetch(`${API_URL}/feeds`, { credentials: 'include' }),
         fetch(`${API_URL}/stats`, { credentials: 'include' }),
-        fetch(`${API_URL}/mcp/status`, { credentials: 'include' }),
+        fetch(`${API_URL}/enrichment/status`, { credentials: 'include' }),
       ]);
 
       if (feedsRes.ok) {
@@ -28,11 +28,11 @@ export function useFeeds() {
         stats.value = await statsRes.json();
       }
 
-      if (mcpRes.ok) {
-        mcpStatus.value = await mcpRes.json();
+      if (enrichRes.ok) {
+        enrichmentStatus.value = await enrichRes.json();
       }
     } catch (err) {
-      console.error('Failed to fetch feeds/stats/mcp:', err);
+      console.error('Failed to fetch feeds/stats/enrichment:', err);
     } finally {
       loading.value = false;
     }
@@ -65,7 +65,7 @@ export function useFeeds() {
   return {
     feeds,
     stats,
-    mcpStatus,
+    enrichmentStatus,
     loading,
     triggerPoll,
   };

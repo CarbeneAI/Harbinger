@@ -4,12 +4,11 @@
  * Why this exists
  * ---------------
  * The Claude CLI analysis path (see analysis-provider.ts) runs with every tool
- * disallowed, so the model cannot call `search_iocs` or the cve-mcp enrichment
- * tools the way the old Anthropic tool-use loop did. Specter hit the same wall
- * and solved it the same way: run the lookups in app code and inject the
- * results into the prompt. See Specter's alert-history.ts for the full
- * rationale, including the 2026-09-22 test where a scoped Bash grant let the
- * model list private key filenames on the Studio.
+ * disallowed, so the model cannot call `search_iocs` the way the old Anthropic
+ * tool-use loop did. Specter hit the same wall and solved it the same way: run
+ * the lookups in app code and inject the results into the prompt. See Specter's
+ * alert-history.ts for the full rationale, including the 2026-09-22 test where
+ * a scoped Bash grant let the model list private key filenames on the Studio.
  *
  * Running the lookups here is strictly better than granting tools:
  *   - deterministic: enrichment always happens, never dependent on the model
@@ -20,14 +19,20 @@
  *
  * That last point is the important one. Under the tool-use loop, "do not
  * enrich RFC1918 / internal IOCs" was a sentence in the system prompt that the
- * model was trusted to obey. Here it is isPrivateIndicator(), applied before
- * any third-party API is touched. A prompt instruction is a request; this is a
- * control.
+ * model was trusted to obey. Here it is isPrivateIndicator(), applied in code
+ * before anything leaves the network. A prompt instruction is a request; this
+ * is a control.
+ *
+ * What leaves the network, as of the cve-mcp removal:
+ *   - CVE IDs only, to CISA KEV and FIRST.org EPSS. Both are public
+ *     identifiers; neither call carries a hostname, IP, or hash.
+ *   - Nothing else. The Wazuh lookup is to your own LAN appliance.
+ * isPrivateIndicator() remains the gate on that boundary: it is applied to the
+ * CVE path below, and any future third-party enrichment MUST route through it.
  */
 
 import type { IOC } from './types';
 import { queryIOCs } from './db';
-import { callCveMcpTool } from './mcp-client';
 import { lookupCveExposure, formatCveExposure, isWazuhConfigured } from './wazuh-client';
 import { getExploitSignals, formatExploitSignal } from './exploit-signal';
 
@@ -36,9 +41,6 @@ const MAX_ENRICHED_IOCS = 5;
 
 /** Max related IOCs pulled from the local DB for context. */
 const MAX_RELATED_IOCS = 25;
-
-/** Per-tool timeout. A slow vendor must not hang the whole analysis. */
-const ENRICH_TIMEOUT_MS = 20_000;
 
 // ---------------------------------------------------------------------------
 // Privacy filter — enforced in code, not requested in a prompt
@@ -119,99 +121,6 @@ export function isPrivateIndicator(value: string): boolean {
 // ---------------------------------------------------------------------------
 // Enrichment
 // ---------------------------------------------------------------------------
-
-/** Which cve-mcp tools apply to each IOC type.
- *
- * CVEs are deliberately absent: they are handled by Wazuh (environment
- * exposure) plus KEV/EPSS (exploitation signal), which need no Python server
- * and answer a better question than the generic NVD lookup did.
- */
-function toolsForIOC(ioc: IOC): Array<{ tool: string; args: Record<string, unknown> }> {
-  switch (ioc.ioc_type) {
-    case 'ip':
-      return [
-        { tool: 'check_ip_reputation', args: { ip: ioc.value } },
-        { tool: 'shodan_host_lookup',  args: { ip: ioc.value } },
-      ];
-    case 'domain':
-      return [{ tool: 'get_domain_intel',  args: { domain: ioc.value } }];
-    case 'url':
-      return [{ tool: 'check_url_safety',  args: { url_or_domain: ioc.value } }];
-    case 'hash':
-      return [{ tool: 'lookup_file_hash',  args: { hash_str: ioc.value } }];
-    default:
-      return [];
-  }
-}
-
-/** Call one tool with a timeout. Never throws — failures degrade to a note. */
-async function callWithTimeout(
-  tool: string,
-  args: Record<string, unknown>,
-): Promise<string> {
-  try {
-    const result = await Promise.race([
-      callCveMcpTool(tool, args),
-      new Promise<string>((_, reject) =>
-        setTimeout(() => reject(new Error('timeout')), ENRICH_TIMEOUT_MS),
-      ),
-    ]);
-    return result;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[prefetch] ${tool} failed:`, msg);
-    return `(enrichment unavailable: ${msg})`;
-  }
-}
-
-/**
- * Enrich the supplied IOCs via cve-mcp, skipping anything private.
- *
- * Returns a markdown block, or '' when there is nothing to report. Failures are
- * surfaced in the text rather than thrown, so the model can see that a lookup
- * failed and must not imply it succeeded.
- */
-export async function buildEnrichmentBlock(iocs: IOC[]): Promise<string> {
-  if (!iocs || iocs.length === 0) return '';
-
-  const candidates = iocs.slice(0, MAX_ENRICHED_IOCS);
-  const sections: string[] = [];
-  const skipped: string[] = [];
-
-  for (const ioc of candidates) {
-    if (isPrivateIndicator(ioc.value)) {
-      skipped.push(ioc.value);
-      continue;
-    }
-
-    const tools = toolsForIOC(ioc);
-    if (tools.length === 0) continue;
-
-    const results = await Promise.all(
-      tools.map(async ({ tool, args }) => {
-        const text = await callWithTimeout(tool, args);
-        return `#### ${tool}\n\n${text}\n`;
-      }),
-    );
-
-    sections.push(
-      `### Enrichment: ${ioc.ioc_type.toUpperCase()} ${ioc.value}\n\n${results.join('\n')}`,
-    );
-  }
-
-  if (sections.length === 0 && skipped.length === 0) return '';
-
-  const lines = ['\n## Third-Party Enrichment (fetched by Harbinger)\n'];
-  if (sections.length > 0) lines.push(...sections);
-  if (skipped.length > 0) {
-    lines.push(
-      `\n_Skipped enrichment for ${skipped.length} internal/private indicator(s) ` +
-        `(RFC1918, loopback, or internal hostname): ${skipped.join(', ')}. ` +
-        `These were NOT sent to any third-party API._\n`,
-    );
-  }
-  return lines.join('\n');
-}
 
 // ---------------------------------------------------------------------------
 // Local IOC search
@@ -309,6 +218,12 @@ async function buildCveBlock(iocs: IOC[]): Promise<string> {
     .filter((i) => i.ioc_type === 'cve')
     .map((i) => i.value.trim().toUpperCase())
     .filter((v) => /^CVE-\d{4}-\d{4,}$/.test(v));
+  // NOTE: do NOT run CVE IDs through isPrivateIndicator(). That filter treats
+  // any dotless string as an internal hostname, so it returns true for every
+  // CVE ID and would silently disable all enrichment (caught in testing
+  // 2026-09-23). The strict CVE-YYYY-NNNN regex above is the correct gate
+  // here: it guarantees only a public identifier is sent to CISA/FIRST.
+  // isPrivateIndicator() stays the required gate for any host-like indicator.
 
   if (cves.length === 0) return '';
 
@@ -373,12 +288,9 @@ export async function buildPrefetchedContext(
   iocContext?: IOC[],
 ): Promise<string> {
   const related = buildRelatedIOCBlock(userMessage, iocContext);
-  const [cveBlock, enrichment] = await Promise.all([
-    buildCveBlock(iocContext ?? []),
-    buildEnrichmentBlock(iocContext ?? []),
-  ]);
+  const cveBlock = await buildCveBlock(iocContext ?? []);
 
-  const combined = [related, cveBlock, enrichment].filter(Boolean).join('\n');
+  const combined = [related, cveBlock].filter(Boolean).join('\n');
   if (!combined) return '';
 
   return (

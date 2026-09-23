@@ -6,7 +6,8 @@
 import { initDB, getStats, getFeeds, queryIOCs, getIOCById, getBriefs, getBriefById } from './db';
 import { startFeedScheduler, pollAllFeeds } from './feeds';
 import { sendChatMessage, generateThreatBrief, generateDailyThreatBrief, generateWeeklyStrategicBrief, getOllamaModels, QUICK_PROMPTS } from './ai-client';
-import { getCveMcpStatus } from './mcp-client';
+import { getWazuhStatus } from './wazuh-client';
+import { getExploitSignalStatus } from './exploit-signal';
 
 // Initialize database
 const db = initDB();
@@ -86,10 +87,15 @@ const server = Bun.serve({
       return respond({ triggered: true, message: 'Poll started' });
     }
 
-    // GET /mcp/status — cve-mcp threat-intel enrichment health
-    if (path === '/mcp/status' && req.method === 'GET') {
-      const status = await getCveMcpStatus();
-      return respond(status);
+    // GET /enrichment/status — environment exposure + exploitation signal health.
+    // Replaced /mcp/status when CVE enrichment moved off the cve-mcp Python
+    // server to Wazuh (what is installed here) + KEV/EPSS (what is exploited).
+    if (path === '/enrichment/status' && req.method === 'GET') {
+      const [wazuh, exploit] = await Promise.all([
+        getWazuhStatus(),
+        getExploitSignalStatus(),
+      ]);
+      return respond({ wazuh, exploit });
     }
 
     // GET /iocs

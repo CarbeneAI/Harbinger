@@ -219,6 +219,50 @@ export function formatCveExposure(e: WazuhCveExposure): string {
   return lines.join('\n');
 }
 
+/** Health of the Wazuh environment-exposure lookup. */
+export async function getWazuhStatus(): Promise<{
+  configured: boolean;
+  connected: boolean;
+  distinctCves?: number;
+  criticalHigh?: number;
+  hosts?: number;
+  lastError?: string;
+}> {
+  if (!isWazuhConfigured()) {
+    return { configured: false, connected: false };
+  }
+  try {
+    const data = await search(
+      {
+        size: 0,
+        aggs: {
+          cves: { cardinality: { field: 'vulnerability.id' } },
+          hosts: { cardinality: { field: 'agent.name' } },
+          crit: {
+            filter: { terms: { 'vulnerability.severity': ['Critical', 'High'] } },
+            aggs: { n: { cardinality: { field: 'vulnerability.id' } } },
+          },
+        },
+      },
+      10_000,
+    );
+    const a = data?.aggregations;
+    return {
+      configured: true,
+      connected: true,
+      distinctCves: a?.cves?.value,
+      criticalHigh: a?.crit?.n?.value,
+      hosts: a?.hosts?.value,
+    };
+  } catch (err) {
+    return {
+      configured: true,
+      connected: false,
+      lastError: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 /**
  * Top Critical/High CVEs actually present in the environment.
  * Used to ground the briefs in real exposure rather than generic feed volume.

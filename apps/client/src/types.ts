@@ -35,11 +35,23 @@ export interface IOCStats {
   lastUpdated?: number;
 }
 
-export interface McpStatus {
-  enabled: boolean;
-  connected: boolean;
-  toolCount?: number;
-  lastError?: string;
+/** Environment exposure (Wazuh) + exploitation signal (KEV/EPSS) health.
+ *  Replaced McpStatus when CVE enrichment moved off the cve-mcp Python server. */
+export interface EnrichmentStatus {
+  wazuh: {
+    configured: boolean;
+    connected: boolean;
+    distinctCves?: number;
+    criticalHigh?: number;
+    hosts?: number;
+    lastError?: string;
+  };
+  exploit: {
+    connected: boolean;
+    kevEntries?: number;
+    cachedAt?: string;
+    lastError?: string;
+  };
 }
 
 export interface ThreatBrief {
