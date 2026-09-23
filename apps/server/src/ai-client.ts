@@ -7,6 +7,8 @@
  */
 
 import { homedir } from 'os';
+import { readdirSync, readFileSync } from 'fs';
+import { join } from 'path';
 import type { PAIChatMessage, PAIChatResponse, TokenUsage, IOC, SeverityLevel } from './types';
 import { queryIOCs, insertBrief } from './db';
 import { callCveMcpTool } from './mcp-client';
@@ -335,27 +337,34 @@ export const QUICK_PROMPTS = {
 };
 
 // ---------------------------------------------------------------------------
-// API key loading
+// xAI OAuth token loading (reads Hermes auth.json — subscription, no API key)
 // ---------------------------------------------------------------------------
 
-async function getApiKey(): Promise<string> {
-  if (process.env.ANTHROPIC_API_KEY) {
-    return process.env.ANTHROPIC_API_KEY;
+async function getXaiToken(): Promise<{ token: string; baseUrl: string }> {
+  // 1. Explicit env override (useful for CI / server deploys)
+  if (process.env.XAI_API_KEY) {
+    return { token: process.env.XAI_API_KEY, baseUrl: 'https://api.x.ai/v1' };
   }
 
-  const envPath = `${homedir()}/.claude/.env`;
+  // 2. Hermes OAuth credential pool
+  const authPath = `${homedir()}/.hermes/auth.json`;
   try {
-    const envFile = await Bun.file(envPath).text();
-    const match = envFile.match(/ANTHROPIC_API_KEY=(.+)/);
-    if (match) {
-      return match[1].trim();
+    const raw = await Bun.file(authPath).text();
+    const auth = JSON.parse(raw);
+    const creds: any[] = auth?.credential_pool?.['xai-oauth'] ?? [];
+    const active = creds.find((c: any) => c.access_token);
+    if (active?.access_token) {
+      return {
+        token: active.access_token,
+        baseUrl: active.base_url ?? 'https://api.x.ai/v1',
+      };
     }
   } catch (err) {
-    console.error('[ai-client] Failed to read API key from .env:', err);
+    console.error('[ai-client] Failed to read xAI token from Hermes auth.json:', err);
   }
 
   throw new Error(
-    'No Anthropic API key found — set ANTHROPIC_API_KEY or add it to ~/.claude/.env',
+    'No xAI token found — set XAI_API_KEY env var or ensure Hermes xai-oauth credential is active.',
   );
 }
 
@@ -508,16 +517,14 @@ export async function sendChatMessage(
     );
   }
 
-  // Anthropic path with tool-use loop
+  // xAI path with tool-use loop (OpenAI-compatible API)
   try {
-    const apiKey = await getApiKey();
-    const anthropicModel = 'claude-sonnet-4-6';
+    const { token, baseUrl } = await getXaiToken();
+    const xaiModel = 'grok-4.6';
 
     // Accumulated token usage across all rounds (tool-use may span multiple API calls)
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
-    let totalCacheCreationTokens = 0;
-    let totalCacheReadTokens = 0;
 
     const systemPrompt =
       buildSystemPrompt(iocContext) +
@@ -534,7 +541,18 @@ export async function sendChatMessage(
       `IMPORTANT: Use the IOC context already provided above as your primary source. Call tools only to fill specific gaps — most analyses need 0–2 tool calls total. ` +
       `Never call enrichment tools speculatively. Always end with a complete written analysis, never on a tool call.`;
 
+    // Convert Anthropic-style tool definitions to OpenAI function-calling format
+    const allTools = [SEARCH_TOOL, ...CVE_MCP_TOOLS].map((t) => ({
+      type: 'function' as const,
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: t.input_schema,
+      },
+    }));
+
     const messages: any[] = [
+      { role: 'system', content: systemPrompt },
       ...chatHistory.map((m) => ({ role: m.role, content: m.content })),
       { role: 'user', content: userMessage },
     ];
@@ -542,99 +560,79 @@ export async function sendChatMessage(
     let toolCallCount = 0;
 
     while (toolCallCount <= MAX_TOOL_CALLS) {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
+          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
-          model: anthropicModel,
+          model: xaiModel,
           max_tokens: 8192,
-          system: systemPrompt,
-          tools: [SEARCH_TOOL, ...CVE_MCP_TOOLS],
+          tools: allTools,
           messages,
         }),
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error('[ai-client] Anthropic API error:', response.status, errorText);
+        console.error('[ai-client] xAI API error:', response.status, errorText);
         return { success: false, error: `API error: ${response.status}` };
       }
 
       const data = (await response.json()) as any;
 
-      // Accumulate token usage from every round (tool-use loops generate multiple API calls)
+      // Accumulate token usage
       if (data.usage) {
-        totalInputTokens         += data.usage.input_tokens         ?? 0;
-        totalOutputTokens        += data.usage.output_tokens        ?? 0;
-        totalCacheCreationTokens += data.usage.cache_creation_input_tokens ?? 0;
-        totalCacheReadTokens     += data.usage.cache_read_input_tokens     ?? 0;
+        totalInputTokens  += data.usage.prompt_tokens     ?? 0;
+        totalOutputTokens += data.usage.completion_tokens ?? 0;
       }
 
-      if (data.stop_reason === 'tool_use') {
+      const choice = data.choices?.[0];
+      const finishReason: string = choice?.finish_reason ?? 'stop';
+      const assistantMsg = choice?.message;
+
+      if (finishReason === 'tool_calls' && assistantMsg?.tool_calls?.length) {
         toolCallCount++;
+        messages.push({ role: 'assistant', content: assistantMsg.content ?? null, tool_calls: assistantMsg.tool_calls });
 
-        const toolUseBlocks = (data.content as any[]).filter(
-          (block: any) => block.type === 'tool_use',
-        );
-        const toolResults: any[] = [];
+        for (const toolCall of assistantMsg.tool_calls) {
+          const toolName: string = toolCall.function?.name ?? '';
+          let args: any = {};
+          try { args = JSON.parse(toolCall.function?.arguments ?? '{}'); } catch { /* bad JSON */ }
 
-        for (const toolUse of toolUseBlocks) {
-          if (toolUse.name === 'search_iocs') {
-            console.log(`[ai-client] Tool call #${toolCallCount}: search_iocs`, toolUse.input);
-            const resultText = executeSearchIocs(toolUse.input);
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: toolUse.id,
-              content: resultText,
-            });
-          } else if (CVE_MCP_TOOL_NAMES.has(toolUse.name)) {
-            console.log(`[ai-client] Tool call #${toolCallCount}: ${toolUse.name}`, toolUse.input);
-            const resultText = await callCveMcpTool(toolUse.name, toolUse.input);
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: toolUse.id,
-              content: resultText,
-            });
+          let resultText: string;
+          if (toolName === 'search_iocs') {
+            console.log(`[ai-client] Tool call #${toolCallCount}: search_iocs`, args);
+            resultText = executeSearchIocs(args);
+          } else if (CVE_MCP_TOOL_NAMES.has(toolName)) {
+            console.log(`[ai-client] Tool call #${toolCallCount}: ${toolName}`, args);
+            resultText = await callCveMcpTool(toolName, args);
           } else {
-            console.warn(`[ai-client] Unknown tool: ${toolUse.name}`);
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: toolUse.id,
-              content: `Unknown tool: ${toolUse.name}`,
-              is_error: true,
-            });
+            console.warn(`[ai-client] Unknown tool: ${toolName}`);
+            resultText = `Unknown tool: ${toolName}`;
           }
-        }
 
-        messages.push({ role: 'assistant', content: data.content });
-        messages.push({ role: 'user', content: toolResults });
+          messages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: resultText,
+          });
+        }
         continue;
       }
 
-      // Terminal response — extract text blocks and build usage summary
-      const textBlocks = (data.content as any[]).filter((block: any) => block.type === 'text');
-      const content = textBlocks.map((block: any) => block.text as string).join('\n');
+      // Terminal response
+      const content: string = assistantMsg?.content ?? '';
 
       const usage: TokenUsage = {
-        inputTokens:              totalInputTokens,
-        outputTokens:             totalOutputTokens,
-        cacheCreationInputTokens: totalCacheCreationTokens || undefined,
-        cacheReadInputTokens:     totalCacheReadTokens     || undefined,
-        costUsd: computeCost(
-          anthropicModel,
-          totalInputTokens,
-          totalOutputTokens,
-          totalCacheCreationTokens,
-          totalCacheReadTokens,
-        ),
-        model: anthropicModel,
+        inputTokens:  totalInputTokens,
+        outputTokens: totalOutputTokens,
+        model: xaiModel,
+        costUsd: null,  // xAI subscription — no per-token cost to track
       };
 
-      console.log(`[ai-client] Usage: ${totalInputTokens} in + ${totalOutputTokens} out, cost $${usage.costUsd?.toFixed(4) ?? 'unknown'}`);
+      console.log(`[ai-client] Usage: ${totalInputTokens} in + ${totalOutputTokens} out (xAI subscription)`);
 
       return { success: true, content: defangText(content), usage };
     }
@@ -717,7 +715,7 @@ export async function generateThreatBrief(
   if (result.success && result.content) {
     try {
       const model =
-        provider === 'ollama' ? (ollamaModel ?? 'ollama') : 'claude-sonnet-4-6';
+        provider === 'ollama' ? (ollamaModel ?? 'ollama') : 'grok-4.6';
       insertBrief(result.content, {
         iocCount:     iocs.length,
         model,
@@ -737,6 +735,38 @@ export async function generateThreatBrief(
 // generateDailyThreatBrief — last 24h, hunt + detection guide format
 // ---------------------------------------------------------------------------
 
+// Reads the N most recent archived briefs and returns their campaign headings
+// grouped by date. Used to inject a "recently covered" list into the prompt so
+// the model demotes carryover campaigns instead of re-featuring them daily.
+// Fails open: any error returns '' so the brief still ships.
+function getRecentBriefHeadings(days: number): string {
+  try {
+    const dir = join(homedir(), '.harbinger', 'briefs');
+    const files = readdirSync(dir)
+      .filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
+      .sort()
+      .reverse()
+      .slice(0, days);
+    if (files.length === 0) return '';
+
+    const blocks: string[] = [];
+    for (const file of files) {
+      const date = file.replace(/\.md$/, '');
+      const body = readFileSync(join(dir, file), 'utf8');
+      const headings = body
+        .split('\n')
+        .filter((l) => l.startsWith('### '))
+        .map((l) => l.replace(/^###\s+/, '').trim())
+        .filter((h) => h.length > 0);
+      if (headings.length === 0) continue;
+      blocks.push(`${date}:\n${headings.map((h) => `  - ${h}`).join('\n')}`);
+    }
+    return blocks.join('\n');
+  } catch {
+    return '';
+  }
+}
+
 const DAILY_BRIEF_PROMPT =
   'You are writing a Daily Threat Hunt Brief for the threat hunters and detection engineer. The IOC dataset below is everything seen in the last 24 hours, sorted by severity. Pick the top 5 priority IOCs and produce the brief in the EXACT format shown below.\n\n' +
   'CRITICAL OUTPUT RULES:\n' +
@@ -745,7 +775,8 @@ const DAILY_BRIEF_PROMPT =
   '- Use the EXACT emoji and heading hierarchy shown below. The stoplight emoji (🔴 🟠 ⚠️) and section emoji (🚨 🎯 📊 ⭐) must appear as written.\n' +
   '- Defang every IOC in PROSE: `hxxp(s)://`, replace dots in hostnames and IPv4 addresses with `[.]` (e.g. `evil[.]com`, `1[.]2[.]3[.]4`). Leave URL paths and CVE IDs intact.\n' +
   '- IOC values INSIDE fenced code blocks must stay LIVE (NOT defanged) so the queries are copy-paste runnable in Wazuh and Chronicle.\n' +
-  '- Always label hunt queries with whether they are Wazuh or Google SecOps Chronicle, and use the matching language tag on the fence (` ```wazuh ` or ` ```chronicle `).\n\n' +
+  '- Always label hunt queries with whether they are Wazuh or Google SecOps Chronicle, and use the matching language tag on the fence (` ```wazuh ` or ` ```chronicle `).\n' +
+  '- **FRESHNESS RULE.** A "Recently Covered" block listing campaign headings from the past 7 briefs may be included below. Treat those campaigns as ALREADY KNOWN to the readers. Do NOT re-feature them under 🔴 Critical or 🟠 High unless the dataset shows materially new infrastructure (new C2 domains, new CVE chain, new TTP, new attribution). If a campaign has only routine continued activity, move it to the new `## 🔄 ONGOING CAMPAIGNS` section as a single one-line bullet noting what is unchanged vs new. Lead the brief with what is genuinely NEW today — net-new campaigns, fresh CVE exploitation, new actor activity — even if their raw IOC count is lower than the carryover campaigns.\n\n' +
   'FORMAT TO PRODUCE (literal):\n\n' +
   '# 🚨 DAILY THREAT HUNT BRIEF\n\n' +
   '**Date:** <today\'s date in long form, e.g. May 7, 2026> | **Classification:** TLP:WHITE | **Window:** Last 24 hours\n\n' +
@@ -774,6 +805,10 @@ const DAILY_BRIEF_PROMPT =
   'Compact bullet list of notable Medium-severity items, fresh CVE additions, or rising patterns from the dataset. No full per-threat block here — short bullets only, with defanged IOCs.\n\n' +
   '- <bullet>\n' +
   '- <bullet>\n\n' +
+  '## 🔄 ONGOING CAMPAIGNS\n\n' +
+  'One-line bullets for campaigns that ALREADY appeared in the Recently Covered list and show only routine continued activity (no new TTP, no new CVE, no new attribution). Note infrastructure churn count if any. If a campaign appeared in Recently Covered but is genuinely new today (new C2 cluster, new vector, new actor link), keep it in 🔴 Critical or 🟠 High instead and mention what changed. If the Recently Covered block is empty or no campaigns roll over, write "_No carryover campaigns to report._"\n\n' +
+  '- **<Campaign>:** continued activity, <N> new IOCs same pattern, no change in TTP. Hunts from <YYYY-MM-DD> brief still apply.\n' +
+  '- **<Campaign>:** quiet today, no new infrastructure observed.\n\n' +
   '## 🎯 IMMEDIATE ACTION ITEMS\n\n' +
   'Numbered list of the day\'s priorities, drawn from the threats above. Mix prose and code blocks where useful (e.g. a sinkhole list, a consolidated hunt query). Defang IOCs in prose; keep them live inside fenced code blocks.\n\n' +
   '1. **<Action — e.g. "Block <Campaign> Infrastructure">** *(Priority 1)*\n' +
@@ -838,8 +873,13 @@ export async function generateDailyThreatBrief(
     lines.push('');
   }
 
+  const recentHeadings = getRecentBriefHeadings(7);
+  const recentBlock = recentHeadings
+    ? `## Recently Covered (past 7 briefs — do not re-feature unless materially new)\n${recentHeadings}\n\n`
+    : '';
+
   const contextMarkdown = lines.join('\n');
-  const prompt = DAILY_BRIEF_PROMPT + '\n\n' + contextMarkdown;
+  const prompt = DAILY_BRIEF_PROMPT + '\n\n' + recentBlock + contextMarkdown;
 
   const result = await sendChatMessage(prompt, [], undefined, undefined, provider, ollamaUrl, ollamaModel);
 
@@ -851,7 +891,7 @@ export async function generateDailyThreatBrief(
   if (result.success && result.content) {
     try {
       const model =
-        provider === 'ollama' ? (ollamaModel ?? 'ollama') : 'claude-sonnet-4-6';
+        provider === 'ollama' ? (ollamaModel ?? 'ollama') : 'grok-4.6';
       insertBrief(result.content, {
         iocCount:     iocs.length,
         model,
@@ -861,6 +901,131 @@ export async function generateDailyThreatBrief(
       });
     } catch (err) {
       console.error('[ai-client] Failed to persist daily brief:', err);
+    }
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// generateWeeklyStrategicBrief — 7-day rollup, leadership / CISO lens
+// ---------------------------------------------------------------------------
+
+// Reads the last N daily briefs in full so the weekly synthesis has narrative
+// continuity. Returns markdown blocks separated by horizontal rules with date
+// headers. Fails open: error returns ''.
+function getRecentBriefsFullText(days: number): string {
+  try {
+    const dir = join(homedir(), '.harbinger', 'briefs');
+    const files = readdirSync(dir)
+      .filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
+      .sort()
+      .reverse()
+      .slice(0, days);
+    if (files.length === 0) return '';
+
+    const blocks: string[] = [];
+    for (const file of files) {
+      const date = file.replace(/\.md$/, '');
+      const body = readFileSync(join(dir, file), 'utf8');
+      blocks.push(`### Brief: ${date}\n\n${body.trim()}`);
+    }
+    return blocks.join('\n\n---\n\n');
+  } catch {
+    return '';
+  }
+}
+
+const WEEKLY_STRATEGIC_PROMPT =
+  'You are writing the Weekly Strategic Threat Synthesis for a security leadership audience (CISO, CTO, CSIRT leads). Below you have the full text of the past 7 daily threat hunt briefs AND a 7-day IOC volume snapshot. Your job is to SYNTHESIZE — find the patterns, the momentum, what changed week-over-week, and what leadership should DO about it. This is NOT a longer daily brief. The daily briefs are tactical (hunt queries, IOC blocking). The weekly is strategic (trends, control gaps, prioritization).\n\n' +
+  'CRITICAL OUTPUT RULES:\n' +
+  '- Source material is ONLY the data provided below. Do NOT call `search_iocs` or any other tool. Synthesize from the briefs + IOC snapshot. Use training knowledge for attribution context only.\n' +
+  '- Begin your response with the H1 heading on the very first line. NO preamble.\n' +
+  '- Use the exact emoji and heading hierarchy shown below.\n' +
+  '- Defang IOCs in prose (`[.]`, `hxxp(s)://`); leave IOCs inside fenced code blocks LIVE.\n' +
+  '- Lead with what CHANGED this week. If a campaign has been in every daily brief for 7 days running, the leadership read is "persistent, baked into hunt rules, stop talking about it." If a NEW actor or CVE emerged mid-week, that is the lead story.\n' +
+  '- Strategic Recommendations must be concrete and actionable — process changes, control gaps to close, detection coverage to add, vendor escalations to make. Not "improve security posture." Bad: "increase monitoring." Good: "add Sigma rule for Cobalt Strike watermark 987654321 to Wazuh ruleset — appeared in 6/7 briefs, hunt automation has zero blocking detections."\n\n' +
+  'FORMAT TO PRODUCE (literal):\n\n' +
+  '# 📅 WEEKLY STRATEGIC THREAT SYNTHESIS\n\n' +
+  '**Week ending:** <today\'s date long form> | **Classification:** TLP:WHITE | **Window:** Last 7 days | **Audience:** CISO / CTO / CSIRT leads\n\n' +
+  '---\n\n' +
+  '## 🗓️ WEEK IN REVIEW\n\n' +
+  '1-2 paragraphs. What was the dominant threat story this week? Was it CVE-driven, ransomware-driven, infostealer-driven, nation-state-driven? Was the week busy or quiet relative to a normal week? Any single event that shaped the week (zero-day disclosure, major breach, sector-targeted campaign)?\n\n' +
+  '## 📈 CAMPAIGN MOMENTUM\n\n' +
+  'Categorize the campaigns that appeared in the past 7 briefs into these buckets. Use one-line bullets, defanged IOCs only where they add signal.\n\n' +
+  '**🔼 Trending up:** New infrastructure, new TTP, expanded targeting, new geos.\n' +
+  '- <Campaign> — <what changed, what to do about it>\n\n' +
+  '**🔽 Trending down / quieted:** Less activity than prior weeks, may indicate disruption or pivot.\n' +
+  '- <Campaign> — <observed change, hypothesis if any>\n\n' +
+  '**⏸️ Persistent baseline:** Appears every day, no meaningful change. These should be in your automated blocklist / detection ruleset, not in conversation.\n' +
+  '- <Campaign> — <one line, no detail needed>\n\n' +
+  '## 🆕 NEW & NOTABLE\n\n' +
+  'Net-new threats that first appeared this week. New actors, new campaigns, new CVE exploitation chains, new TTPs. For each: name, what it is in 1 sentence, why it matters strategically (not tactically — leave hunt queries to the daily).\n\n' +
+  '- **<Name>** — <1 sentence what + 1 sentence why it matters at leadership level>\n\n' +
+  '## 📊 CVE LANDSCAPE\n\n' +
+  'Which CVEs got new exploitation activity this week. Group by patch urgency. If a CVE is being actively exploited in the wild AND your org has not patched, that is the lead bullet.\n\n' +
+  '- **CVE-YYYY-NNNN** — <product> — <KEV status, exploitation breadth, patch availability>\n\n' +
+  '## 🎯 STRATEGIC RECOMMENDATIONS\n\n' +
+  '3-5 numbered, concrete actions for leadership this week. These are NOT hunt queries. They are decisions: where to spend budget, which control gap to close, which vendor to escalate to, which Sigma rule to add to the ruleset, which threat to brief executive leadership on. Each item ≤ 3 lines.\n\n' +
+  '1. **<Action>** — <why, expected impact>\n' +
+  '2. **<Action>** — <why, expected impact>\n\n' +
+  '## 📌 WATCHLIST — NEXT WEEK\n\n' +
+  'Campaigns, CVEs, actors to actively watch for in the coming 7 days. Be specific about WHY each one is on the list and what would escalate it.\n\n' +
+  '- **<Item>** — <why on watchlist, escalation trigger>\n\n' +
+  'End the document after the watchlist. No closing remarks, no sign-off.';
+
+export async function generateWeeklyStrategicBrief(
+  provider: AIProvider,
+  ollamaUrl?: string,
+  ollamaModel?: string,
+): Promise<PAIChatResponse> {
+  // 7-day IOC snapshot for volume signal
+  const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const { iocs } = queryIOCs({ limit: 1000, sort: 'last_seen', sortDir: 'desc', since });
+
+  const briefArchive = getRecentBriefsFullText(7);
+  if (!briefArchive) {
+    return {
+      success: false,
+      error: 'No archived daily briefs found in ~/.harbinger/briefs/. Weekly synthesis needs at least one daily brief to roll up.',
+    };
+  }
+
+  // Severity-grouped IOC counts only (raw values are already in the briefs;
+  // we just want the volume signal for the week here).
+  const counts: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const ioc of iocs) counts[ioc.severity] = (counts[ioc.severity] ?? 0) + 1;
+
+  const iocSummary = [
+    '## 7-Day IOC Volume Snapshot',
+    `Total IOCs ingested in window: ${iocs.length}`,
+    `By severity: 🔴 critical ${counts.critical} | 🟠 high ${counts.high} | ⚠️ medium ${counts.medium} | low ${counts.low}`,
+    '',
+  ].join('\n');
+
+  const archiveBlock = `## Past 7 Daily Briefs (newest first)\n\n${briefArchive}\n`;
+
+  const prompt = WEEKLY_STRATEGIC_PROMPT + '\n\n' + iocSummary + '\n' + archiveBlock;
+
+  const result = await sendChatMessage(prompt, [], undefined, undefined, provider, ollamaUrl, ollamaModel);
+
+  if (result.success && result.content) {
+    result.content = defangText(result.content);
+  }
+
+  if (result.success && result.content) {
+    try {
+      const model =
+        provider === 'ollama' ? (ollamaModel ?? 'ollama') : 'grok-4.6';
+      insertBrief(result.content, {
+        iocCount:     iocs.length,
+        model,
+        inputTokens:  result.usage?.inputTokens,
+        outputTokens: result.usage?.outputTokens,
+        costUsd:      result.usage?.costUsd ?? undefined,
+      });
+    } catch (err) {
+      console.error('[ai-client] Failed to persist weekly brief:', err);
     }
   }
 
