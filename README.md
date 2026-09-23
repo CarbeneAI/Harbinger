@@ -26,7 +26,7 @@ Use this repo. Fork it. Improve it. For CarbeneAI advisory engagement: [carbene.
 - **AI Threat Analyst** — Ask questions about IOCs in plain English. The AI searches your local database, correlates indicators, and explains threats with actionable remediation steps.
 - **Threat-Intel Enrichment** *(optional)* — On-demand IOC enrichment via the audited [cve-mcp](https://github.com/mukul975/cve-mcp-server) Python server: NVD details, EPSS exploit-probability scores, direct CISA KEV checks, MITRE ATT&CK mapping, AbuseIPDB + GreyNoise IP reputation, Shodan host intel, VirusTotal hash lookups, URLScan reputation, and crt.sh certificate transparency for domains. The AI calls these tools selectively — most analyses still run on local data alone.
 - **Auto-Defanged Output** — All AI responses (chat, analyses, threat briefs) automatically defang URLs, hostnames, and IPs using the standard IOC-sharing convention (`http://` → `hxxp://`, `evil.com` → `evil[.]com`, `1.2.3.4` → `1[.]2[.]3[.]4`). Paste briefs into Microsoft Teams, Slack, or email without getting blocked as malicious links. URL paths and CVE IDs are preserved.
-- **Cloud/Local AI Toggle** — Switch between xAI Grok (cloud) and Ollama (local) with one click. Sensitive threat data stays on your network.
+- **Cloud/Local AI Toggle** — Switch between Anthropic Claude (cloud) and Ollama (local) with one click. Sensitive threat data stays on your network.
 - **Analyst Guidance Mode** — AI responses follow a structured triage format: What is this? Why does it matter? How do I know? What do I do next? What should I watch for?
 - **IOC Detail Cards** — Click any IOC to see full context: severity, type, description, source, timestamps, tags, and reference links.
 - **Threat Brief Generation** — One-click AI-generated threat briefs summarizing the most critical recent intelligence.
@@ -66,7 +66,7 @@ One-click AI-generated intelligence brief summarizing critical threats, active c
 | Frontend | Vue 3 + Vite + Tailwind CSS |
 | Backend | Bun HTTP server |
 | Database | SQLite (bun:sqlite) with FTS5 |
-| AI | xAI Grok (tool use) or Ollama (local) |
+| AI | Anthropic Claude API (tool use) or Ollama (local) |
 | Theme | CarbeneAI dark (Tokyo Night) |
 | Icons | Lucide Vue |
 
@@ -74,7 +74,7 @@ One-click AI-generated intelligence brief summarizing critical threats, active c
 
 - [Bun](https://bun.sh) v1.0+
 - [Abuse.ch Auth Key](https://auth.abuse.ch/) (free — for URLhaus + ThreatFox feeds)
-- [xAI account](https://x.ai) with active subscription (for cloud AI) **or** [Ollama](https://ollama.com) (for local AI)
+- [Anthropic API key](https://console.anthropic.com) (for cloud AI) **or** [Ollama](https://ollama.com) (for local AI)
 - *Optional:* [cve-mcp](https://github.com/mukul975/cve-mcp-server) — adds threat-intel enrichment tools (see [Threat-Intel Enrichment](#threat-intel-enrichment))
 
 ## Quick Start
@@ -98,8 +98,8 @@ Edit `.env` and set:
 # Required for URLhaus + ThreatFox feeds (register free at https://auth.abuse.ch/)
 ABUSE_CH_AUTH_KEY=your-key-here
 
-# Required for Cloud AI mode (reads Hermes xai-oauth automatically; set XAI_API_KEY only for non-Hermes deploys)
-# XAI_API_KEY=
+# Required for Cloud AI mode (or use Ollama for local AI)
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 ### 3. Install dependencies
@@ -125,7 +125,7 @@ Feeds begin polling immediately. CISA KEV loads ~1,500 CVEs, URLhaus adds malici
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ABUSE_CH_AUTH_KEY` | — | Abuse.ch API key (free, required for URLhaus + ThreatFox) |
-| `XAI_API_KEY` | — | xAI API key override (optional — cloud AI reads Hermes xai-oauth automatically) |
+| `ANTHROPIC_API_KEY` | — | Anthropic API key (required for cloud AI mode) |
 | `POLL_INTERVAL_MS` | `3600000` | Feed poll interval in ms (default: 1 hour) |
 | `DB_PATH` | `./harbinger.db` | SQLite database file path |
 | `PORT` | `4001` | Server port |
@@ -145,10 +145,10 @@ When you select an IOC and use the chat panel:
 
 ### Cloud vs Local AI
 
-| | Cloud (xAI Grok) | Local (Ollama) |
+| | Cloud (Anthropic) | Local (Ollama) |
 |---|---|---|
-| **Model** | Grok 4.6 | Any Ollama model |
-| **Data privacy** | Sent to xAI API | Stays on your network |
+| **Model** | Claude Sonnet | Any Ollama model |
+| **Data privacy** | Sent to Anthropic API | Stays on your network |
 | **IOC search** | Autonomous tool use | Not available |
 | **cve-mcp enrichment** | Autonomous tool use | Not available |
 | **Speed** | Fast | Depends on hardware |
@@ -189,7 +189,7 @@ Threat intelligence often involves real malicious URLs and IPs. When you paste a
 
 Defanging is applied to all three AI-output paths:
 
-1. **Chat responses** (Cloud/xAI and Local/Ollama)
+1. **Chat responses** (Cloud/Anthropic and Local/Ollama)
 2. **Threat briefs** (the one-click brief generator)
 3. **All quick actions** (Analyze, Threat Brief, Hunt Queries, MITRE ATT&CK/D3FEND)
 
