@@ -65,6 +65,11 @@ export interface PAIChatResponse {
   content?: string;
   error?: string;
   usage?: TokenUsage;
+  // What actually produced this, which is NOT always what was requested: a
+  // 'claude' request silently falls back to the local model when the Studio is
+  // unreachable. Recording the requested provider instead would label a
+  // degraded local brief as a subscription one and hide the degradation.
+  modelUsed?: string;
 }
 
 // Helpers
