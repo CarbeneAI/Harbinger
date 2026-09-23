@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import { isPrivateIndicator } from './prefetch';
+import { isPrivateIndicator, buildRelatedIOCBlock } from './prefetch';
+import type { IOC } from './types';
 
 describe('isPrivateIndicator — enforced privacy control', () => {
   it('blocks RFC1918 ranges', () => {
@@ -56,6 +57,35 @@ describe('isPrivateIndicator — enforced privacy control', () => {
   it('fails closed on empty/garbage input', () => {
     for (const v of ['', '   ']) {
       expect(isPrivateIndicator(v)).toBe(true);
+    }
+  });
+});
+
+describe('buildRelatedIOCBlock — FTS5 term handling', () => {
+  // Regression: raw CVE IDs and domains contain '.' and '-', which FTS5 treats
+  // as syntax. Unquoted they raise "fts5: syntax error near ." and the lookup
+  // silently returns nothing — the model then analyses with no related context
+  // and no one notices. Found in live smoke testing 2026-09-23.
+  it('does not throw on IOC values containing FTS5 syntax characters', () => {
+    const hostile: IOC[] = [
+      'CVE-2021-44228',
+      'evil.com',
+      'sub.domain.co.uk',
+      'a"b',
+      'foo:bar',
+      '1.2.3.4',
+    ].map((value, i) => ({
+      id: i,
+      feed_id: 1,
+      ioc_type: 'cve',
+      value,
+      severity: 'high',
+      first_seen: 0,
+      last_seen: 0,
+    })) as IOC[];
+
+    for (const ioc of hostile) {
+      expect(() => buildRelatedIOCBlock('analyze this', [ioc])).not.toThrow();
     }
   });
 });

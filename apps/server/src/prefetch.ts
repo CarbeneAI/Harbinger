@@ -218,6 +218,18 @@ export async function buildEnrichmentBlock(iocs: IOC[]): Promise<string> {
 // ---------------------------------------------------------------------------
 
 /**
+ * Quote a term for SQLite FTS5.
+ *
+ * FTS5 treats `.`, `-`, `:` and friends as syntax, so a raw CVE ID
+ * ("CVE-2021-44228") or domain ("evil.com") is a syntax error, not a search.
+ * Wrapping in double quotes makes it a literal phrase; internal double quotes
+ * are escaped by doubling per the FTS5 grammar.
+ */
+function quoteFtsTerm(term: string): string {
+  return `"${term.replace(/"/g, '""')}"`;
+}
+
+/**
  * Pull related IOCs from the local database using terms drawn from the user's
  * question and the selected IOCs. Replaces the model's autonomous
  * `search_iocs` calls with one deterministic query.
@@ -231,6 +243,9 @@ export function buildRelatedIOCBlock(
   const terms = new Set<string>();
 
   for (const ioc of iocContext ?? []) {
+    // The IOC value itself is the strongest correlation key (a CVE ID, a
+    // domain, a hash). Tags broaden it to the campaign.
+    if (ioc.value) terms.add(ioc.value);
     if (ioc.tags) for (const t of ioc.tags.slice(0, 3)) terms.add(t);
   }
 
@@ -251,7 +266,7 @@ export function buildRelatedIOCBlock(
 
   for (const term of Array.from(terms).slice(0, 3)) {
     try {
-      const { iocs } = queryIOCs({ search: term, limit: MAX_RELATED_IOCS });
+      const { iocs } = queryIOCs({ search: quoteFtsTerm(term), limit: MAX_RELATED_IOCS });
       for (const ioc of iocs) {
         if (selectedValues.has(ioc.value)) continue;  // already in context
         if (seen.has(ioc.value)) continue;
