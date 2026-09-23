@@ -1,0 +1,301 @@
+/**
+ * Deterministic IOC context gathering, done by Harbinger — not by the model.
+ *
+ * Why this exists
+ * ---------------
+ * The Claude CLI analysis path (see analysis-provider.ts) runs with every tool
+ * disallowed, so the model cannot call `search_iocs` or the cve-mcp enrichment
+ * tools the way the old Anthropic tool-use loop did. Specter hit the same wall
+ * and solved it the same way: run the lookups in app code and inject the
+ * results into the prompt. See Specter's alert-history.ts for the full
+ * rationale, including the 2026-09-22 test where a scoped Bash grant let the
+ * model list private key filenames on the Studio.
+ *
+ * Running the lookups here is strictly better than granting tools:
+ *   - deterministic: enrichment always happens, never dependent on the model
+ *     deciding to ask (this matters for unattended cron briefs)
+ *   - zero added attack surface: no model-controlled command execution
+ *   - cheaper: a fixed set of calls instead of an agent loop
+ *   - the privacy rule becomes ENFORCED rather than merely requested
+ *
+ * That last point is the important one. Under the tool-use loop, "do not
+ * enrich RFC1918 / internal IOCs" was a sentence in the system prompt that the
+ * model was trusted to obey. Here it is isPrivateIndicator(), applied before
+ * any third-party API is touched. A prompt instruction is a request; this is a
+ * control.
+ */
+
+import type { IOC } from './types';
+import { queryIOCs } from './db';
+import { callCveMcpTool } from './mcp-client';
+
+/** Max IOCs enriched per request. Keeps third-party API usage bounded. */
+const MAX_ENRICHED_IOCS = 5;
+
+/** Max related IOCs pulled from the local DB for context. */
+const MAX_RELATED_IOCS = 25;
+
+/** Per-tool timeout. A slow vendor must not hang the whole analysis. */
+const ENRICH_TIMEOUT_MS = 20_000;
+
+// ---------------------------------------------------------------------------
+// Privacy filter — enforced in code, not requested in a prompt
+// ---------------------------------------------------------------------------
+
+const INTERNAL_TLDS = [
+  '.corp', '.local', '.lan', '.internal', '.home', '.intranet', '.private',
+];
+
+/**
+ * Additional internal suffixes on PUBLIC registrable domains.
+ *
+ * The homelab runs everything behind `*.home.carbeneai.com`, which ends in a
+ * real TLD, so the INTERNAL_TLDS suffix check above does NOT catch it. Without
+ * this list an internal hostname like harbinger.home.carbeneai.com would be
+ * shipped to VirusTotal/URLScan as if it were a public IOC.
+ *
+ * Operators can extend this with INTERNAL_DOMAIN_SUFFIXES (comma-separated).
+ */
+const BUILTIN_INTERNAL_SUFFIXES = ['.home.carbeneai.com'];
+
+function internalSuffixes(): string[] {
+  const extra = (process.env.INTERNAL_DOMAIN_SUFFIXES ?? '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  return [...BUILTIN_INTERNAL_SUFFIXES, ...extra];
+}
+
+/**
+ * True when an indicator must never be sent to a third-party enrichment API.
+ *
+ * Covers RFC1918, loopback, link-local, CGNAT, IPv6 ULA/loopback, and internal
+ * hostname suffixes. Conservative by design: when in doubt, treat as private
+ * and skip enrichment. A missed enrichment is a smaller failure than leaking
+ * internal infrastructure to VirusTotal.
+ */
+export function isPrivateIndicator(value: string): boolean {
+  const v = value.trim().toLowerCase();
+  if (!v) return true;
+
+  // Strip scheme and path so a URL is judged on its host.
+  const host = v
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//, '')
+    .split(/[/?#]/)[0]
+    .replace(/:\d+$/, '')
+    .replace(/\[|\]/g, '');
+
+  // IPv4
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    if (a === 10) return true;                          // 10.0.0.0/8
+    if (a === 127) return true;                         // loopback
+    if (a === 0) return true;                           // this-network
+    if (a === 172 && b >= 16 && b <= 31) return true;   // 172.16.0.0/12
+    if (a === 192 && b === 168) return true;            // 192.168.0.0/16
+    if (a === 169 && b === 254) return true;            // link-local
+    if (a === 100 && b >= 64 && b <= 127) return true;  // CGNAT 100.64.0.0/10
+    if (a >= 224) return true;                          // multicast / reserved
+    return false;
+  }
+
+  // IPv6 loopback / unspecified / ULA / link-local
+  if (host === '::1' || host === '::') return true;
+  if (/^f[cd][0-9a-f]{2}:/.test(host)) return true;     // fc00::/7 ULA
+  if (/^fe80:/.test(host)) return true;                 // link-local
+
+  // Internal hostnames
+  if (host === 'localhost') return true;
+  if (!host.includes('.')) return true;                 // bare hostname
+  if (INTERNAL_TLDS.some((tld) => host.endsWith(tld))) return true;
+  if (internalSuffixes().some((sfx) => host.endsWith(sfx))) return true;
+
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Enrichment
+// ---------------------------------------------------------------------------
+
+/** Which cve-mcp tools apply to each IOC type. */
+function toolsForIOC(ioc: IOC): Array<{ tool: string; args: Record<string, unknown> }> {
+  switch (ioc.ioc_type) {
+    case 'cve':
+      return [
+        { tool: 'lookup_cve',          args: { cve_id: ioc.value } },
+        { tool: 'get_epss_score',      args: { cve_ids: ioc.value } },
+        { tool: 'check_kev',           args: { cve_id: ioc.value } },
+        { tool: 'get_attack_mapping',  args: { cve_id: ioc.value } },
+      ];
+    case 'ip':
+      return [
+        { tool: 'check_ip_reputation', args: { ip: ioc.value } },
+        { tool: 'shodan_host_lookup',  args: { ip: ioc.value } },
+      ];
+    case 'domain':
+      return [{ tool: 'get_domain_intel',  args: { domain: ioc.value } }];
+    case 'url':
+      return [{ tool: 'check_url_safety',  args: { url_or_domain: ioc.value } }];
+    case 'hash':
+      return [{ tool: 'lookup_file_hash',  args: { hash_str: ioc.value } }];
+    default:
+      return [];
+  }
+}
+
+/** Call one tool with a timeout. Never throws — failures degrade to a note. */
+async function callWithTimeout(
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<string> {
+  try {
+    const result = await Promise.race([
+      callCveMcpTool(tool, args),
+      new Promise<string>((_, reject) =>
+        setTimeout(() => reject(new Error('timeout')), ENRICH_TIMEOUT_MS),
+      ),
+    ]);
+    return result;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[prefetch] ${tool} failed:`, msg);
+    return `(enrichment unavailable: ${msg})`;
+  }
+}
+
+/**
+ * Enrich the supplied IOCs via cve-mcp, skipping anything private.
+ *
+ * Returns a markdown block, or '' when there is nothing to report. Failures are
+ * surfaced in the text rather than thrown, so the model can see that a lookup
+ * failed and must not imply it succeeded.
+ */
+export async function buildEnrichmentBlock(iocs: IOC[]): Promise<string> {
+  if (!iocs || iocs.length === 0) return '';
+
+  const candidates = iocs.slice(0, MAX_ENRICHED_IOCS);
+  const sections: string[] = [];
+  const skipped: string[] = [];
+
+  for (const ioc of candidates) {
+    if (isPrivateIndicator(ioc.value)) {
+      skipped.push(ioc.value);
+      continue;
+    }
+
+    const tools = toolsForIOC(ioc);
+    if (tools.length === 0) continue;
+
+    const results = await Promise.all(
+      tools.map(async ({ tool, args }) => {
+        const text = await callWithTimeout(tool, args);
+        return `#### ${tool}\n\n${text}\n`;
+      }),
+    );
+
+    sections.push(
+      `### Enrichment: ${ioc.ioc_type.toUpperCase()} ${ioc.value}\n\n${results.join('\n')}`,
+    );
+  }
+
+  if (sections.length === 0 && skipped.length === 0) return '';
+
+  const lines = ['\n## Third-Party Enrichment (fetched by Harbinger)\n'];
+  if (sections.length > 0) lines.push(...sections);
+  if (skipped.length > 0) {
+    lines.push(
+      `\n_Skipped enrichment for ${skipped.length} internal/private indicator(s) ` +
+        `(RFC1918, loopback, or internal hostname): ${skipped.join(', ')}. ` +
+        `These were NOT sent to any third-party API._\n`,
+    );
+  }
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Local IOC search
+// ---------------------------------------------------------------------------
+
+/**
+ * Pull related IOCs from the local database using terms drawn from the user's
+ * question and the selected IOCs. Replaces the model's autonomous
+ * `search_iocs` calls with one deterministic query.
+ */
+export function buildRelatedIOCBlock(
+  userMessage: string,
+  iocContext?: IOC[],
+): string {
+  // Prefer searching on the selected IOCs' own tags/values; fall back to the
+  // user's own words when nothing is selected.
+  const terms = new Set<string>();
+
+  for (const ioc of iocContext ?? []) {
+    if (ioc.tags) for (const t of ioc.tags.slice(0, 3)) terms.add(t);
+  }
+
+  if (terms.size === 0) {
+    // Crude but effective: keep words long enough to be meaningful.
+    for (const word of userMessage.split(/\s+/)) {
+      const w = word.replace(/[^a-zA-Z0-9.\-_]/g, '');
+      if (w.length >= 5) terms.add(w);
+      if (terms.size >= 3) break;
+    }
+  }
+
+  if (terms.size === 0) return '';
+
+  const selectedValues = new Set((iocContext ?? []).map((i) => i.value));
+  const seen = new Set<string>();
+  const found: IOC[] = [];
+
+  for (const term of Array.from(terms).slice(0, 3)) {
+    try {
+      const { iocs } = queryIOCs({ search: term, limit: MAX_RELATED_IOCS });
+      for (const ioc of iocs) {
+        if (selectedValues.has(ioc.value)) continue;  // already in context
+        if (seen.has(ioc.value)) continue;
+        seen.add(ioc.value);
+        found.push(ioc);
+      }
+    } catch (err) {
+      console.error('[prefetch] related IOC search failed:', err);
+    }
+  }
+
+  if (found.length === 0) return '';
+
+  const lines = [
+    `\n## Related IOCs from the local database (${found.length}, fetched by Harbinger)\n`,
+  ];
+  for (const ioc of found.slice(0, MAX_RELATED_IOCS)) {
+    lines.push(
+      `- [${ioc.severity.toUpperCase()}] ${ioc.ioc_type.toUpperCase()}: ${ioc.value}` +
+        (ioc.title ? ` — ${ioc.title}` : '') +
+        (ioc.tags?.length ? ` (${ioc.tags.slice(0, 3).join(', ')})` : ''),
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Build the full pre-fetched context block for a chat request: related local
+ * IOCs plus third-party enrichment. Safe to call with no IOC context.
+ */
+export async function buildPrefetchedContext(
+  userMessage: string,
+  iocContext?: IOC[],
+): Promise<string> {
+  const related = buildRelatedIOCBlock(userMessage, iocContext);
+  const enrichment = await buildEnrichmentBlock(iocContext ?? []);
+  const combined = [related, enrichment].filter(Boolean).join('\n');
+  if (!combined) return '';
+
+  return (
+    combined +
+    '\n\n_The data above was gathered by Harbinger before this prompt was sent. ' +
+    'You have no live tools in this session: do not claim to have searched or ' +
+    'looked anything up yourself, and do not imply data exists beyond what is ' +
+    'shown here. If something needed is missing, say so plainly._\n'
+  );
+}

@@ -7,9 +7,17 @@
  */
 
 import { homedir } from 'os';
+import { readdirSync, readFileSync } from 'fs';
+import { join } from 'path';
 import type { PAIChatMessage, PAIChatResponse, TokenUsage, IOC, SeverityLevel } from './types';
 import { queryIOCs, insertBrief } from './db';
 import { callCveMcpTool } from './mcp-client';
+import { buildPrefetchedContext } from './prefetch';
+import {
+  resolveAnalysisProvider,
+  sendClaudeCliMessage,
+  type ClientAIProvider,
+} from './analysis-provider';
 
 // ---------------------------------------------------------------------------
 // Pricing table — USD per million tokens (update when Anthropic changes rates)
@@ -492,7 +500,9 @@ export async function sendChatMessage(
   ollamaUrl?: string,
   ollamaModel?: string,
 ): Promise<PAIChatResponse> {
-  if (provider === 'ollama') {
+  const resolved = resolveAnalysisProvider(provider as ClientAIProvider);
+
+  if (resolved === 'ollama') {
     if (!ollamaModel) {
       return {
         success: false,
@@ -508,7 +518,18 @@ export async function sendChatMessage(
     );
   }
 
-  // Anthropic path with tool-use loop
+  // Claude CLI path — no live tools, so Harbinger gathers context first.
+  if (resolved === 'claude') {
+    const prefetched = await buildPrefetchedContext(userMessage, iocContext);
+    const systemPrompt = buildSystemPrompt(iocContext) + prefetched;
+    const result = await sendClaudeCliMessage(userMessage, chatHistory, systemPrompt);
+    if (result.success && result.content) {
+      result.content = defangText(result.content);
+    }
+    return result;
+  }
+
+  // Anthropic path with tool-use loop (legacy; ANALYSIS_PROVIDER=anthropic)
   try {
     const apiKey = await getApiKey();
     const anthropicModel = 'claude-sonnet-4-6';
@@ -717,7 +738,7 @@ export async function generateThreatBrief(
   if (result.success && result.content) {
     try {
       const model =
-        provider === 'ollama' ? (ollamaModel ?? 'ollama') : 'claude-sonnet-4-6';
+        result.usage?.model ?? (provider === 'ollama' ? (ollamaModel ?? 'ollama') : 'claude-cli');
       insertBrief(result.content, {
         iocCount:     iocs.length,
         model,
@@ -851,7 +872,7 @@ export async function generateDailyThreatBrief(
   if (result.success && result.content) {
     try {
       const model =
-        provider === 'ollama' ? (ollamaModel ?? 'ollama') : 'claude-sonnet-4-6';
+        result.usage?.model ?? (provider === 'ollama' ? (ollamaModel ?? 'ollama') : 'claude-cli');
       insertBrief(result.content, {
         iocCount:     iocs.length,
         model,
@@ -861,6 +882,131 @@ export async function generateDailyThreatBrief(
       });
     } catch (err) {
       console.error('[ai-client] Failed to persist daily brief:', err);
+    }
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// generateWeeklyStrategicBrief — 7-day rollup, leadership / CISO lens
+// ---------------------------------------------------------------------------
+
+// Reads the last N daily briefs in full so the weekly synthesis has narrative
+// continuity. Returns markdown blocks separated by horizontal rules with date
+// headers. Fails open: error returns ''.
+function getRecentBriefsFullText(days: number): string {
+  try {
+    const dir = join(homedir(), '.harbinger', 'briefs');
+    const files = readdirSync(dir)
+      .filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
+      .sort()
+      .reverse()
+      .slice(0, days);
+    if (files.length === 0) return '';
+
+    const blocks: string[] = [];
+    for (const file of files) {
+      const date = file.replace(/\.md$/, '');
+      const body = readFileSync(join(dir, file), 'utf8');
+      blocks.push(`### Brief: ${date}\n\n${body.trim()}`);
+    }
+    return blocks.join('\n\n---\n\n');
+  } catch {
+    return '';
+  }
+}
+
+const WEEKLY_STRATEGIC_PROMPT =
+  'You are writing the Weekly Strategic Threat Synthesis for a security leadership audience (CISO, CTO, CSIRT leads). Below you have the full text of the past 7 daily threat hunt briefs AND a 7-day IOC volume snapshot. Your job is to SYNTHESIZE — find the patterns, the momentum, what changed week-over-week, and what leadership should DO about it. This is NOT a longer daily brief. The daily briefs are tactical (hunt queries, IOC blocking). The weekly is strategic (trends, control gaps, prioritization).\n\n' +
+  'CRITICAL OUTPUT RULES:\n' +
+  '- Source material is ONLY the data provided below. Do NOT call `search_iocs` or any other tool. Synthesize from the briefs + IOC snapshot. Use training knowledge for attribution context only.\n' +
+  '- Begin your response with the H1 heading on the very first line. NO preamble.\n' +
+  '- Use the exact emoji and heading hierarchy shown below.\n' +
+  '- Defang IOCs in prose (`[.]`, `hxxp(s)://`); leave IOCs inside fenced code blocks LIVE.\n' +
+  '- Lead with what CHANGED this week. If a campaign has been in every daily brief for 7 days running, the leadership read is "persistent, baked into hunt rules, stop talking about it." If a NEW actor or CVE emerged mid-week, that is the lead story.\n' +
+  '- Strategic Recommendations must be concrete and actionable — process changes, control gaps to close, detection coverage to add, vendor escalations to make. Not "improve security posture." Bad: "increase monitoring." Good: "add Sigma rule for Cobalt Strike watermark 987654321 to Wazuh ruleset — appeared in 6/7 briefs, hunt automation has zero blocking detections."\n\n' +
+  'FORMAT TO PRODUCE (literal):\n\n' +
+  '# 📅 WEEKLY STRATEGIC THREAT SYNTHESIS\n\n' +
+  '**Week ending:** <today\'s date long form> | **Classification:** TLP:WHITE | **Window:** Last 7 days | **Audience:** CISO / CTO / CSIRT leads\n\n' +
+  '---\n\n' +
+  '## 🗓️ WEEK IN REVIEW\n\n' +
+  '1-2 paragraphs. What was the dominant threat story this week? Was it CVE-driven, ransomware-driven, infostealer-driven, nation-state-driven? Was the week busy or quiet relative to a normal week? Any single event that shaped the week (zero-day disclosure, major breach, sector-targeted campaign)?\n\n' +
+  '## 📈 CAMPAIGN MOMENTUM\n\n' +
+  'Categorize the campaigns that appeared in the past 7 briefs into these buckets. Use one-line bullets, defanged IOCs only where they add signal.\n\n' +
+  '**🔼 Trending up:** New infrastructure, new TTP, expanded targeting, new geos.\n' +
+  '- <Campaign> — <what changed, what to do about it>\n\n' +
+  '**🔽 Trending down / quieted:** Less activity than prior weeks, may indicate disruption or pivot.\n' +
+  '- <Campaign> — <observed change, hypothesis if any>\n\n' +
+  '**⏸️ Persistent baseline:** Appears every day, no meaningful change. These should be in your automated blocklist / detection ruleset, not in conversation.\n' +
+  '- <Campaign> — <one line, no detail needed>\n\n' +
+  '## 🆕 NEW & NOTABLE\n\n' +
+  'Net-new threats that first appeared this week. New actors, new campaigns, new CVE exploitation chains, new TTPs. For each: name, what it is in 1 sentence, why it matters strategically (not tactically — leave hunt queries to the daily).\n\n' +
+  '- **<Name>** — <1 sentence what + 1 sentence why it matters at leadership level>\n\n' +
+  '## 📊 CVE LANDSCAPE\n\n' +
+  'Which CVEs got new exploitation activity this week. Group by patch urgency. If a CVE is being actively exploited in the wild AND your org has not patched, that is the lead bullet.\n\n' +
+  '- **CVE-YYYY-NNNN** — <product> — <KEV status, exploitation breadth, patch availability>\n\n' +
+  '## 🎯 STRATEGIC RECOMMENDATIONS\n\n' +
+  '3-5 numbered, concrete actions for leadership this week. These are NOT hunt queries. They are decisions: where to spend budget, which control gap to close, which vendor to escalate to, which Sigma rule to add to the ruleset, which threat to brief executive leadership on. Each item ≤ 3 lines.\n\n' +
+  '1. **<Action>** — <why, expected impact>\n' +
+  '2. **<Action>** — <why, expected impact>\n\n' +
+  '## 📌 WATCHLIST — NEXT WEEK\n\n' +
+  'Campaigns, CVEs, actors to actively watch for in the coming 7 days. Be specific about WHY each one is on the list and what would escalate it.\n\n' +
+  '- **<Item>** — <why on watchlist, escalation trigger>\n\n' +
+  'End the document after the watchlist. No closing remarks, no sign-off.';
+
+export async function generateWeeklyStrategicBrief(
+  provider: AIProvider,
+  ollamaUrl?: string,
+  ollamaModel?: string,
+): Promise<PAIChatResponse> {
+  // 7-day IOC snapshot for volume signal
+  const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const { iocs } = queryIOCs({ limit: 1000, sort: 'last_seen', sortDir: 'desc', since });
+
+  const briefArchive = getRecentBriefsFullText(7);
+  if (!briefArchive) {
+    return {
+      success: false,
+      error: 'No archived daily briefs found in ~/.harbinger/briefs/. Weekly synthesis needs at least one daily brief to roll up.',
+    };
+  }
+
+  // Severity-grouped IOC counts only (raw values are already in the briefs;
+  // we just want the volume signal for the week here).
+  const counts: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const ioc of iocs) counts[ioc.severity] = (counts[ioc.severity] ?? 0) + 1;
+
+  const iocSummary = [
+    '## 7-Day IOC Volume Snapshot',
+    `Total IOCs ingested in window: ${iocs.length}`,
+    `By severity: 🔴 critical ${counts.critical} | 🟠 high ${counts.high} | ⚠️ medium ${counts.medium} | low ${counts.low}`,
+    '',
+  ].join('\n');
+
+  const archiveBlock = `## Past 7 Daily Briefs (newest first)\n\n${briefArchive}\n`;
+
+  const prompt = WEEKLY_STRATEGIC_PROMPT + '\n\n' + iocSummary + '\n' + archiveBlock;
+
+  const result = await sendChatMessage(prompt, [], undefined, undefined, provider, ollamaUrl, ollamaModel);
+
+  if (result.success && result.content) {
+    result.content = defangText(result.content);
+  }
+
+  if (result.success && result.content) {
+    try {
+      const model =
+        result.usage?.model ?? (provider === 'ollama' ? (ollamaModel ?? 'ollama') : 'claude-cli');
+      insertBrief(result.content, {
+        iocCount:     iocs.length,
+        model,
+        inputTokens:  result.usage?.inputTokens,
+        outputTokens: result.usage?.outputTokens,
+        costUsd:      result.usage?.costUsd ?? undefined,
+      });
+    } catch (err) {
+      console.error('[ai-client] Failed to persist weekly brief:', err);
     }
   }
 

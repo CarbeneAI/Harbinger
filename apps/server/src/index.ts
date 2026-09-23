@@ -5,7 +5,7 @@
 
 import { initDB, getStats, getFeeds, queryIOCs, getIOCById, getBriefs, getBriefById } from './db';
 import { startFeedScheduler, pollAllFeeds } from './feeds';
-import { sendChatMessage, generateThreatBrief, generateDailyThreatBrief, getOllamaModels, QUICK_PROMPTS } from './ai-client';
+import { sendChatMessage, generateThreatBrief, generateDailyThreatBrief, generateWeeklyStrategicBrief, getOllamaModels, QUICK_PROMPTS } from './ai-client';
 import { getCveMcpStatus } from './mcp-client';
 
 // Initialize database
@@ -182,6 +182,19 @@ const server = Bun.serve({
         return respond(response);
       } catch (error) {
         console.error('Daily brief generation error:', error);
+        return respond({ success: false, error: 'Internal error' }, 500);
+      }
+    }
+
+    // POST /briefs/weekly-strategic — 7-day rollup, leadership lens
+    if (path === '/briefs/weekly-strategic' && req.method === 'POST') {
+      try {
+        const body = await req.json() as any;
+        const { provider, ollamaUrl, ollamaModel } = body || {};
+        const response = await generateWeeklyStrategicBrief(provider, ollamaUrl, ollamaModel);
+        return respond(response);
+      } catch (error) {
+        console.error('Weekly strategic brief generation error:', error);
         return respond({ success: false, error: 'Internal error' }, 500);
       }
     }
