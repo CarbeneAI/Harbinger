@@ -60,7 +60,7 @@ fi
 # ---- report ---------------------------------------------------------------
 if [ -n "$PROBLEMS" ]; then
   alert "Harbinger brief STALE" \
-        "${PROBLEMS} Check: 'systemctl --user status harbinger', 'ollama ps', and /home/cgarrison/.harbinger/logs/daily-brief-email.log on DellAI."
+        "${PROBLEMS} Check on srv-apps: 'systemctl --user status harbinger' and /home/cgarrison/.harbinger/logs/daily-brief-email.log. Ollama is on DellAI: 'ollama ps' there."
   echo "[$(date -Iseconds)] WATCHDOG ALERT: ${PROBLEMS}"
   exit 1
 fi

@@ -38,17 +38,19 @@ alert() {
 diagnose() {
   case "$1" in
     *"credit balance"*|*"Credit balance"*)
-      echo "Anthropic credits are exhausted. Briefs should be on local Ollama: check BRIEF_PROVIDER (expected 'ollama'). Do NOT buy credits." ;;
+      echo "Hit the metered Anthropic API instead of the Claude Max subscription. Briefs run BRIEF_PROVIDER=claude via the CLI on the Studio, which bills no credits. An ANTHROPIC_API_KEY leaking into the remote env is the usual cause. Do NOT buy credits." ;;
     *"timed out"*|*"timeout"*|*"AbortError"*)
       echo "Generation timed out. Check Ollama: 'systemctl status ollama' and 'ollama ps' on DellAI." ;;
     *"ECONNREFUSED"*|*"fetch failed"*|*"Unable to connect"*)
-      echo "Harbinger API unreachable on :4004. Run 'systemctl --user status harbinger' on DellAI." ;;
+      echo "Harbinger API unreachable on :4004. Run 'systemctl --user status harbinger' HERE on srv-apps (Harbinger moved off DellAI 2026-09-22)." ;;
     *"is Ollama running"*)
       echo "Ollama is down or the model is missing. Run 'ollama ps' and 'ollama list' on DellAI." ;;
+    *"Claude CLI"*|*"BatchMode"*|*"Host key"*|*"Permission denied (publickey"*)
+      echo "ssh to the Studio failed, so the Claude CLI could not run. Check the Studio is awake and on Tailscale, then: ssh cgarrison@100.73.131.1 true" ;;
     *"invalid_grant"*|*"oauth"*|*"OAuth"*|*"401"*)
       echo "Gmail OAuth rejected. Re-auth the EmailManager workspace token." ;;
     *"No IOCs"*)
-      echo "No IOCs in the 24h window. Feeds may have stopped: check /health iocCount on DellAI." ;;
+      echo "No IOCs in the 24h window. Feeds may have stopped: curl localhost:4004/health HERE on srv-apps and check iocCount." ;;
     *)
       echo "See /home/cgarrison/.harbinger/logs/daily-brief-email.log" ;;
   esac

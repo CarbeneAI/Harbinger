@@ -33,9 +33,11 @@ alert() {
 diagnose() {
   case "$1" in
     *"credit balance"*|*"Credit balance"*)
-      echo "Anthropic credits are exhausted. Weekly should be on local Ollama: check BRIEF_PROVIDER. Do NOT buy credits." ;;
+      echo "Hit the metered Anthropic API instead of the Claude Max subscription. Weekly runs BRIEF_PROVIDER=claude via the CLI on the Studio. Check ANTHROPIC_API_KEY is not set in the remote env. Do NOT buy credits." ;;
     *"timed out"*|*"timeout"*|*"AbortError"*)
       echo "Generation timed out. Check Ollama on DellAI: 'systemctl status ollama'." ;;
+    *"Claude CLI"*|*"BatchMode"*|*"Host key"*|*"Permission denied (publickey"*)
+      echo "ssh to the Studio failed, so the Claude CLI could not run. Check the Studio is awake and on Tailscale, then: ssh cgarrison@100.73.131.1 true" ;;
     *"ECONNREFUSED"*|*"fetch failed"*)
       echo "Harbinger API unreachable on :4004. Run 'systemctl --user status harbinger'." ;;
     *)

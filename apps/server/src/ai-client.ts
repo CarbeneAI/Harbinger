@@ -668,6 +668,13 @@ const DAILY_BRIEF_PROMPT =
   'Compact bullet list of notable Medium-severity items, fresh CVE additions, or rising patterns from the dataset. No full per-threat block here — short bullets only, with defanged IOCs.\n\n' +
   '- <bullet>\n' +
   '- <bullet>\n\n' +
+  '## 🖥️ YOUR ENVIRONMENT (from the Wazuh vulnerability inventory)\n\n' +
+  'This section is about YOUR hosts, not the feed. Use the "Environment Exposure" data supplied above the IOC dataset.\n\n' +
+  'Two things, both short:\n\n' +
+  '1. **Cross-reference.** Did any CVE in today\'s IOC window also appear in the environment exposure list? If yes, that is the lead item of the whole brief — name the CVE, the affected hosts, the installed version, and the fix version, and say plainly that it is both circulating and present here. If there is no overlap, say so in one line: that is a genuinely good result and worth stating, not omitting.\n' +
+  '2. **Standing patch queue.** List the top 3 Critical/High CVEs present in the environment by host spread, as one-line bullets: CVE, package, host count, fix version. Do not editorialise; this is a running reminder, not analysis.\n\n' +
+  'If the exposure data says the lookup FAILED or was not run, write "_Environment exposure unavailable this run — status unknown._" and move on. Never assert a CVE is or is not present when the check did not run.\n\n' +
+  '- **CVE-YYYY-NNNN** — `<package>` — <N> host(s), fix: <version>\n\n' +
   '## 🎯 IMMEDIATE ACTION ITEMS\n\n' +
   'Numbered list of the day\'s priorities, drawn from the threats above. Mix prose and code blocks where useful (e.g. a sinkhole list, a consolidated hunt query). Defang IOCs in prose; keep them live inside fenced code blocks.\n\n' +
   '1. **<Action — e.g. "Block <Campaign> Infrastructure">** *(Priority 1)*\n' +
