@@ -858,8 +858,12 @@ const WEEKLY_STRATEGIC_PROMPT =
   'Net-new threats that first appeared this week. New actors, new campaigns, new CVE exploitation chains, new TTPs. For each: name, what it is in 1 sentence, why it matters strategically (not tactically — leave hunt queries to the daily).\n\n' +
   '- **<Name>** — <1 sentence what + 1 sentence why it matters at leadership level>\n\n' +
   '## 📊 CVE LANDSCAPE\n\n' +
-  'Which CVEs got new exploitation activity this week. Group by patch urgency. If a CVE is being actively exploited in the wild AND your org has not patched, that is the lead bullet.\n\n' +
-  '- **CVE-YYYY-NNNN** — <product> — <KEV status, exploitation breadth, patch availability>\n\n' +
+  'Lead with CVEs that are BOTH present in the environment (per the Wazuh exposure data above) AND showing exploitation activity — those are the patch queue. Name the affected hosts and the fix version; leadership needs to know the blast radius, not the CVSS vector. Then cover notable CVEs NOT in the environment separately and briefly, labelled as watch-only.\n\n' +
+  'If the exposure data says the lookup failed or was not run, say the environment status is unknown for this week. Do NOT assert presence or absence you cannot see.\n\n' +
+  '**In your environment (patch queue):**\n' +
+  '- **CVE-YYYY-NNNN** — <product> — on <N> host(s) (<names>), fix: <version>. <KEV status, EPSS if notable>\n\n' +
+  '**Watch-only (not installed here):**\n' +
+  '- **CVE-YYYY-NNNN** — <product> — <why it still matters: sector targeting, KEV, detection opportunity>\n\n' +
   '## 🎯 STRATEGIC RECOMMENDATIONS\n\n' +
   '3-5 numbered, concrete actions for leadership this week. These are NOT hunt queries. They are decisions: where to spend budget, which control gap to close, which vendor to escalate to, which Sigma rule to add to the ruleset, which threat to brief executive leadership on. Each item ≤ 3 lines.\n\n' +
   '1. **<Action>** — <why, expected impact>\n' +
@@ -868,6 +872,29 @@ const WEEKLY_STRATEGIC_PROMPT =
   'Campaigns, CVEs, actors to actively watch for in the coming 7 days. Be specific about WHY each one is on the list and what would escalate it.\n\n' +
   '- **<Item>** — <why on watchlist, escalation trigger>\n\n' +
   'End the document after the watchlist. No closing remarks, no sign-off.';
+
+/**
+ * Age in days of the newest archived daily brief, or null if none exists.
+ *
+ * Guards the weekly against synthesizing a retired archive. Daily briefs were
+ * retired 2026-08-21 and the weekly kept rolling up the same August files for
+ * five weeks, emailing a month-old narrative under the current date.
+ */
+function getNewestBriefAgeDays(): number | null {
+  try {
+    const dir = join(homedir(), '.harbinger', 'briefs');
+    const files = readdirSync(dir)
+      .filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
+      .sort();
+    const newest = files[files.length - 1];
+    if (!newest) return null;
+    const stamp = Date.parse(`${newest.replace(/\.md$/, '')}T00:00:00Z`);
+    if (Number.isNaN(stamp)) return null;
+    return Math.floor((Date.now() - stamp) / 86_400_000);
+  } catch {
+    return null;
+  }
+}
 
 export async function generateWeeklyStrategicBrief(
   provider: AIProvider,
@@ -878,16 +905,32 @@ export async function generateWeeklyStrategicBrief(
   const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
   const { iocs } = queryIOCs({ limit: 1000, sort: 'last_seen', sortDir: 'desc', since });
 
-  const briefArchive = getRecentBriefsFullText(7);
-  if (!briefArchive) {
+  // Daily-brief archive is OPTIONAL narrative continuity, not the data source.
+  //
+  // It used to be required, and that shipped five weeks of stale briefs. Daily
+  // briefs were retired 2026-08-21, so getRecentBriefsFullText(7) kept
+  // returning the same August files forever. The weekly then stamped today's
+  // date on a month-old narrative and emailed it — volume numbers fresh, story
+  // stale, no error anywhere. Found 2026-09-23.
+  //
+  // The weekly is now self-sufficient: it synthesizes from the live 7-day IOC
+  // window and the Wazuh exposure snapshot. Archived dailies are folded in only
+  // when they actually fall inside the window.
+  const STALE_AFTER_DAYS = 8;
+  const archiveAgeDays = getNewestBriefAgeDays();
+  const archiveIsFresh =
+    archiveAgeDays !== null && archiveAgeDays <= STALE_AFTER_DAYS;
+  const briefArchive = archiveIsFresh ? getRecentBriefsFullText(7) : '';
+
+  if (iocs.length === 0 && !briefArchive) {
     return {
       success: false,
-      error: 'No archived daily briefs found in ~/.harbinger/briefs/. Weekly synthesis needs at least one daily brief to roll up.',
+      error:
+        'No IOCs in the last 7 days and no recent daily briefs. Nothing to synthesize.',
     };
   }
 
-  // Severity-grouped IOC counts only (raw values are already in the briefs;
-  // we just want the volume signal for the week here).
+  // Severity-grouped IOC counts for the volume signal.
   const counts: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0 };
   for (const ioc of iocs) counts[ioc.severity] = (counts[ioc.severity] ?? 0) + 1;
 
@@ -898,10 +941,38 @@ export async function generateWeeklyStrategicBrief(
     '',
   ].join('\n');
 
-  const archiveBlock = `## Past 7 Daily Briefs (newest first)\n\n${briefArchive}\n`;
+  // Live campaign detail from the actual window, so the narrative has something
+  // to synthesize from when there are no daily briefs to lean on.
+  const campaignLines: string[] = ['## Top IOCs This Week (live, last 7 days)\n'];
+  for (const severity of ['critical', 'high'] as const) {
+    const group = iocs.filter((i) => i.severity === severity);
+    if (group.length === 0) continue;
+    campaignLines.push(`### ${severity.toUpperCase()} (${group.length})`);
+    for (const ioc of group.slice(0, 40)) {
+      campaignLines.push(
+        `- [${ioc.ioc_type}] ${ioc.value}${ioc.title ? ` — ${ioc.title}` : ''}` +
+          (ioc.tags?.length ? ` (${ioc.tags.slice(0, 4).join(', ')})` : ''),
+      );
+    }
+    campaignLines.push('');
+  }
+  const campaignBlock = campaignLines.join('\n');
+
+  const archiveBlock = briefArchive
+    ? `## Past Daily Briefs (newest first, within the window)\n\n${briefArchive}\n`
+    : `## Past Daily Briefs\n\n_None within the last ${STALE_AFTER_DAYS} days` +
+      (archiveAgeDays === null
+        ? ' (no archive found).'
+        : ` (newest is ${archiveAgeDays} days old; daily briefs appear to be retired).`) +
+      ' Synthesize from the live IOC window and environment exposure above. ' +
+      'Do NOT reference campaigns or dates you cannot see in the data provided — ' +
+      'if week-over-week comparison is impossible, say so plainly rather than ' +
+      'inventing a trend._\n';
 
   const exposure = await getEnvironmentExposureSummary();
-  const prompt = WEEKLY_STRATEGIC_PROMPT + '\n\n' + exposure + '\n' + iocSummary + '\n' + archiveBlock;
+  const prompt =
+    WEEKLY_STRATEGIC_PROMPT + '\n\n' + exposure + '\n' + iocSummary + '\n' +
+    campaignBlock + '\n' + archiveBlock;
 
   const result = await sendChatMessage(prompt, [], undefined, undefined, provider, ollamaUrl, ollamaModel);
 
