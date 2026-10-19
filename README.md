@@ -164,7 +164,7 @@ When you select an IOC and use the chat panel:
 
 All feeds are free. CISA KEV requires no authentication. URLhaus and ThreatFox require a free API key from [auth.abuse.ch](https://auth.abuse.ch/).
 
-Feed requests retain their 30-second deadline through response-body reads. See [feed request deadlines](docs/feed-request-deadlines.md) for cancellation behavior, offline evidence and limits.
+Feed requests retain their 30-second deadline through response-body reads. Synchronous JSON parsing and database work have no execution deadline in this change. See [feed request deadlines](docs/feed-request-deadlines.md) for cancellation behavior, offline evidence and limits.
 
 ## Auto-Defanged Output
 
