@@ -50,15 +50,18 @@ function isIPAddress(host: string): boolean {
 /** abuse.ch Auth-Key — register free at https://auth.abuse.ch/ */
 const ABUSE_CH_AUTH_KEY = process.env.ABUSE_CH_AUTH_KEY || '';
 
-/** Fetch with a 30-second timeout via AbortController. */
+/** Keep the request deadline attached through native response-body consumption. */
 async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30_000);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
+  const rejected = new AbortController();
+  const signal = AbortSignal.any([AbortSignal.timeout(30_000), rejected.signal]);
+  const response = await fetch(url, { ...options, signal });
+  if (!response.ok) {
+    // Callers reject status before reading JSON. Close an unused body promptly,
+    // while returning the same Response for their existing HTTP diagnostics.
+    rejected.abort();
+    await response.body?.cancel().catch(() => {});
   }
+  return response;
 }
 
 // ---------------------------------------------------------------------------

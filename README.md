@@ -164,6 +164,8 @@ When you select an IOC and use the chat panel:
 
 All feeds are free. CISA KEV requires no authentication. URLhaus and ThreatFox require a free API key from [auth.abuse.ch](https://auth.abuse.ch/).
 
+Feed requests retain their 30-second deadline through response-body reads. Synchronous JSON parsing and database work have no execution deadline in this change. See [feed request deadlines](docs/feed-request-deadlines.md) for cancellation behavior, offline evidence and limits.
+
 ## Auto-Defanged Output
 
 Threat intelligence often involves real malicious URLs and IPs. When you paste an AI analysis or threat brief into Microsoft Teams, Slack, or email, those clients flag live malicious links and either block the message or rewrite it. Harbinger automatically defangs all AI output using the industry-standard IOC-sharing convention before returning it.
