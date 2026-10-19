@@ -268,6 +268,14 @@ Enrichment tools forward IOC values (IPs, domains, URLs, hashes, CVE IDs) to thi
 | **Specter** | Real-Time SIEM Dashboard | [GitHub](https://github.com/CarbeneAI/Specter) |
 | **Harbinger** | AI-Powered Threat Intelligence | You are here |
 
+## Markdown rendering safety
+
+Assistant output passes through a restrictive DOMPurify allowlist before HTML
+insertion. Normal Markdown and explicit HTTP(S) links remain; model-supplied
+images, active HTML, and other URL schemes are excluded. Follow the
+[Markdown safety guide](docs/markdown-safety.md) for the policy, browser checks,
+and limitations before changing the renderer or using a hosted deployment.
+
 ## Contributing
 
 Pull requests welcome. Please open an issue first to discuss major changes.

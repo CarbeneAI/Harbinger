@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch } from 'vue';
-import { marked } from 'marked';
+import { renderMarkdown } from '../lib/markdown';
 import {
   Send,
   Trash2,
@@ -22,16 +22,6 @@ import {
 } from 'lucide-vue-next';
 import type { IOC, ChatMessage, QuickPrompts, AIProvider, AIProviderConfig } from '../types';
 import { formatRelativeTime } from '../types';
-
-// Configure marked for analyst output
-marked.setOptions({
-  breaks: true,
-  gfm: true,
-});
-
-const renderMarkdown = (content: string): string => {
-  return marked.parse(content) as string;
-};
 
 const props = defineProps<{
   messages: ChatMessage[];
