@@ -6,6 +6,7 @@ This is a contributor proposal for maintainer discussion, not an adopted release
 
 - Preserve the distinction between a failed Wazuh lookup and confirmed CVE absence in analysis context.
 - Cover failed, absent, present, and unconfigured exposure through the production context builder with mocked sources.
+- Validate completed Wazuh searches, exact CVE counts, and required aggregates through offline HTTP fixtures; partial or malformed responses remain unknown.
 - Document current provider routing, CVE prefetch, and external data flows.
 - Run server tests/typechecking and the client build in CI with frozen dependency installs.
 
@@ -15,7 +16,7 @@ Current offline commands and limitations are in the [contributor guide](README.m
 
 Problem: unavailable or stale external evidence must not become a confident absence claim.
 
-Proposed approach: add sanitized contract fixtures for source timeouts, invalid responses, cache expiry, and partial enrichment.
+Proposed approach: extend the Wazuh response fixtures to additional sources and cache expiry, including interactions between partially available enrichment sources.
 
 Acceptance criteria:
 
@@ -49,6 +50,12 @@ Acceptance criteria:
 - Documentation checks have a documented local command and run without secrets.
 - Human and coding-agent instructions use the same supported installation and validation commands.
 - Live-integration smoke tests remain opt-in, with explicit prerequisites and sanitized results tied to a commit.
+
+## Proposed release gates
+
+Self-hosted readiness still needs verified connection trust, explicit API access boundaries behind an authenticated proxy, safe rendering of model output, and a disposable install/restart/backup/restore check. The current fixture suite and this contribution do not establish those gates.
+
+Hosted readiness follows the self-hosted gates and also requires tenant isolation, server-controlled provider destinations and credentials, per-user authorization and audit records, and bounded job, rate, and spending limits. These are proposed acceptance areas for maintainer discussion, not claims that hosting is currently safe or supported.
 
 ## Contribution standard
 

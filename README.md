@@ -221,6 +221,8 @@ The default Claude CLI path calls [`buildPrefetchedContext`](apps/server/src/pre
 
 An unconfigured Wazuh connection is reported as **not checked**. A failed lookup is **unknown**, with a lookup-failed warning; it must not become a claim that the CVE is absent. A successful zero-result query means no affected package was found in Wazuh's monitored inventory, not proof about unmonitored systems.
 
+HTTP 200 alone is not evidence of a complete search. Harbinger checks search completion, shard success, exact CVE hit counts, result structure, and required aggregations before using inventory results. Timeouts, partial shard results, malformed responses, and lower-bound CVE counts remain unknown. CVE lookups request exact totals with `track_total_hits: true`; at most 12 instance samples are returned. Legacy integer totals are also accepted. Health and brief-summary responses validate their own required aggregates instead of treating missing values as zero.
+
 The `anthropic` and `ollama` chat paths do not run this prefetch step. The former `cve-mcp` integration and its `CVE_MCP_*` settings have been removed. Harbinger no longer exposes its former IP, domain, URL, or hash enrichment tools.
 
 ### Data flow and operational limits
@@ -291,7 +293,7 @@ Run these from the repository root with Bun 1.3.14 to match [CI](.github/workflo
 (cd apps/client && bun run build)
 ```
 
-Dependency installation needs package-registry access. The tests and build do not require a configured `.env`, Wazuh, SSH, feed credentials, or model API calls. Exposure regressions use the real context builder and formatters with mocked data sources; unexpected `fetch` calls fail the test.
+Dependency installation needs package-registry access. The tests and build do not require a configured `.env`, Wazuh, SSH, feed credentials, or model API calls. Context-builder regressions mock data sources and reject unexpected `fetch` calls. Wazuh client fixtures replace only HTTP transport, exercising real response validation, lookup, health, summary, and formatting paths.
 
 Keep exposure states distinct when editing [`prefetch.ts`](apps/server/src/prefetch.ts): not configured, failed lookup, confirmed absent, and confirmed present. Add tests through production functions instead of copying their implementation into the test. Update this README and [`.env.example`](.env.example) when changing provider routing or configuration.
 
