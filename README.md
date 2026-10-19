@@ -60,6 +60,10 @@ One-click AI-generated intelligence brief summarizing critical threats, active c
 
 ## Tech Stack
 
+For client changes, run both the Vue typecheck and the production build. See
+[client validation](docs/client-validation.md) for the commands, CI coverage,
+and feed poll timestamp semantics.
+
 | Component | Technology |
 |-----------|-----------|
 | Runtime | Bun |

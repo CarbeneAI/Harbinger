@@ -255,8 +255,8 @@ function getSeverityCount(severity: SeverityLevel): number {
           >{{ popover.feed.status }}</span>
         </div>
         <div v-if="popover.feed.error_msg" class="text-severity-critical mt-1 break-words">{{ popover.feed.error_msg }}</div>
-        <div v-if="popover.feed.last_poll_at" class="text-text-tertiary mt-1">
-          Last poll: {{ new Date(popover.feed.last_poll_at).toLocaleTimeString() }}
+        <div v-if="popover.feed.last_poll != null" class="text-text-tertiary mt-1">
+          Last poll: {{ new Date(popover.feed.last_poll).toLocaleTimeString() }}
         </div>
       </template>
 
