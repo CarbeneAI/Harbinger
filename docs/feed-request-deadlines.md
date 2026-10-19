@@ -17,7 +17,7 @@ bun --no-env-file test
 bunx --no-install tsc --noEmit
 ```
 
-The standalone suite contains 38 tests, including ten subprocess scenarios in `src/feed-request-deadlines.test.ts`. They call production `pollAllFeeds()` with temporary real SQLite databases and real HTTP streams bound to `127.0.0.1` on disposable ports. No external feeds or credentials are used. Only the deadline clock is shortened in failure scenarios; the configured production policy remains 30 seconds.
+Ten subprocess scenarios in `src/feed-request-deadlines.test.ts` run alongside the existing server tests. They call production `pollAllFeeds()` with temporary real SQLite databases and real HTTP streams bound to `127.0.0.1` on disposable ports. No external feeds or credentials are used. Only the deadline clock is shortened in failure scenarios; the configured production policy remains 30 seconds.
 
 The cases cover stalled bodies for all three feeds, delayed headers, HTTP 503 with stalled unused bodies for all feeds, malformed JSON, a reset after headers, and a successful request with the actual 30-second signal. Assertions check actual server-stream cancellation, preserved HTTP diagnostics, no IOC writes or success status for the failed feed, preserved historical count, successful peer feeds, and recovery on a subsequent valid cycle. A fixture rescue releases old behavior so baseline failures clean up rather than leave services running.
 
