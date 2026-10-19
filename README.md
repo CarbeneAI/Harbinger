@@ -133,11 +133,6 @@ Feeds begin polling immediately. CISA KEV loads ~1,500 CVEs, URLhaus adds malici
 | `POLL_INTERVAL_MS` | `3600000` | Feed poll interval in ms (default: 1 hour) |
 | `DB_PATH` | `./harbinger.db` | SQLite database file path |
 | `PORT` | `4001` | Server port |
-| `CLIENT_PORT` | `5174` | Vite development port |
-| `HARBINGER_API_HOST` | `127.0.0.1` | API bind address |
-| `HARBINGER_CLIENT_HOST` | `127.0.0.1` | Vite development and preview bind address |
-| `CORS_ALLOWED_ORIGIN` | `http://127.0.0.1:5174` | Exact browser origin; default follows `CLIENT_PORT` |
-| `HARBINGER_ALLOWED_HOSTS` | Loopback hosts | Additional exact Host names, comma-separated, without schemes or ports |
 | `CVE_MCP_ENABLED` | `true` | Enable cve-mcp threat-intel enrichment tools (set `false` to disable) |
 | `CVE_MCP_PYTHON` | `~/Dev/cve-mcp-server/.venv/bin/python` | Path to the cve-mcp Python interpreter |
 | `CVE_MCP_CWD` | `~/Dev/cve-mcp-server` | Path to the cve-mcp install directory |
