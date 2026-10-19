@@ -20,8 +20,8 @@
  * raw indexer port 9200 is localhost-only on the Wazuh box; the proxy is the
  * approved path (see the wazuh-siem skill).
  *
- * Fails open everywhere. If Wazuh is unreachable the brief still ships, with
- * text saying the lookup failed, so the model cannot imply it checked.
+ * Brief generation continues when inventory is unavailable, but incomplete or
+ * malformed evidence stays unknown rather than becoming confirmed absence.
  */
 
 /** One affected installation of a CVE on one host. */
@@ -49,6 +49,48 @@ export interface WazuhCveExposure {
 const VULN_INDEX = 'wazuh-states-vulnerabilities*';
 const DEFAULT_TIMEOUT_MS = 20_000;
 const MAX_INSTANCES = 12;
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+/** HTTP success alone does not establish that every inventory shard was searched. */
+function validateSearch(data: any): void {
+  if (!isRecord(data) || data.error !== undefined || data.timed_out !== false ||
+      (data.terminated_early !== undefined && data.terminated_early !== false)) {
+    throw new Error('Wazuh search did not complete successfully');
+  }
+  const shards = data._shards;
+  if (!isRecord(shards) || !isCount(shards.total) || shards.total === 0 ||
+      shards.successful !== shards.total || shards.failed !== 0) {
+    throw new Error('Wazuh search has incomplete shard results');
+  }
+  const hits = data.hits;
+  const total = hits?.total;
+  const validTotal = isCount(total) || (isRecord(total) && isCount(total.value) &&
+    (total.relation === 'eq' || total.relation === 'gte'));
+  if (!isRecord(hits) || !validTotal || !Array.isArray(hits.hits) ||
+      !hits.hits.every((hit: unknown) => isRecord(hit) && isRecord(hit._source))) {
+    throw new Error('Wazuh search returned invalid hit data');
+  }
+}
+
+function requireCount(value: unknown): number {
+  if (!isCount(value)) throw new Error('Wazuh returned an invalid aggregation count');
+  return value;
+}
+
+function requireBuckets(value: unknown): Record<string, any>[] {
+  if (!Array.isArray(value) || !value.every(bucket => isRecord(bucket) &&
+      typeof bucket.key === 'string' && isCount(bucket.doc_count))) {
+    throw new Error('Wazuh returned invalid aggregation buckets');
+  }
+  return value;
+}
 
 function config() {
   const url = process.env.WAZUH_DASHBOARD_URL;
@@ -101,7 +143,9 @@ async function search(body: unknown, timeoutMs: number): Promise<any> {
     if (!res.ok) {
       throw new Error(`Wazuh returned HTTP ${res.status}`);
     }
-    return await res.json();
+    const data = await res.json();
+    validateSearch(data);
+    return data;
   } finally {
     clearTimeout(timer);
   }
@@ -129,6 +173,8 @@ export async function lookupCveExposure(
     const data = await search(
       {
         size: MAX_INSTANCES,
+        // Exact totals let a complete zero-result search establish absence.
+        track_total_hits: true,
         query: { term: { 'vulnerability.id': cveId } },
         aggs: { hosts: { terms: { field: 'agent.name', size: 50 } } },
         _source: [
@@ -140,8 +186,19 @@ export async function lookupCveExposure(
       timeoutMs,
     );
 
-    const total: number = data?.hits?.total?.value ?? 0;
-    const hits: any[] = data?.hits?.hits ?? [];
+    const rawTotal = data.hits.total;
+    if (typeof rawTotal !== 'number' && rawTotal.relation !== 'eq') {
+      throw new Error('Wazuh returned a lower-bound exposure count');
+    }
+    const total: number = typeof rawTotal === 'number' ? rawTotal : rawTotal.value;
+    const hits: any[] = data.hits.hits;
+    if (hits.length > Math.min(total, MAX_INSTANCES) || (total > 0 && hits.length === 0)) {
+      throw new Error('Wazuh exposure count and returned instances are inconsistent');
+    }
+    const hostBuckets = requireBuckets(data.aggregations?.hosts?.buckets);
+    if (total === 0 && hostBuckets.length > 0) {
+      throw new Error('Wazuh returned hosts for a zero-result exposure search');
+    }
     if (total === 0) return base;
 
     const instances: WazuhCveInstance[] = hits.map((h) => {
@@ -155,9 +212,7 @@ export async function lookupCveExposure(
       };
     });
 
-    const hosts: string[] = (data?.aggregations?.hosts?.buckets ?? []).map(
-      (b: any) => b.key as string,
-    );
+    const hosts: string[] = hostBuckets.map(b => b.key);
 
     const first = hits[0]?._source ?? {};
     return {
@@ -181,7 +236,7 @@ export function formatCveExposure(e: WazuhCveExposure): string {
   if (e.error) {
     return (
       `**${e.cveId} — environment exposure: LOOKUP FAILED** (${e.error}). ` +
-      `Do not state whether this CVE is present; the check did not run.`
+      `Do not state whether this CVE is present; the check could not be completed.`
     );
   }
 
@@ -250,9 +305,9 @@ export async function getWazuhStatus(): Promise<{
     return {
       configured: true,
       connected: true,
-      distinctCves: a?.cves?.value,
-      criticalHigh: a?.crit?.n?.value,
-      hosts: a?.hosts?.value,
+      distinctCves: requireCount(a?.cves?.value),
+      criticalHigh: requireCount(a?.crit?.n?.value),
+      hosts: requireCount(a?.hosts?.value),
     };
   } catch (err) {
     return {
@@ -301,10 +356,12 @@ export async function getEnvironmentExposureSummary(
     );
 
     const aggs = data?.aggregations;
-    if (!aggs) return '';
-
-    const distinct = aggs.total?.value ?? 0;
-    const sev: string = (aggs.by_sev?.buckets ?? [])
+    const distinct = requireCount(aggs?.total?.value);
+    const cves = requireBuckets(aggs?.cves?.buckets);
+    if ((distinct === 0 && cves.length > 0) || (distinct > 0 && limit > 0 && cves.length === 0)) {
+      throw new Error('Wazuh summary count and CVE buckets are inconsistent');
+    }
+    const sev: string = requireBuckets(aggs?.by_sev?.buckets)
       .map((b: any) => `${b.key} ${b.doc_count}`)
       .join(' | ');
 
@@ -316,13 +373,19 @@ export async function getEnvironmentExposureSummary(
       'Most widespread Critical/High CVEs in YOUR environment:',
     ];
 
-    for (const b of aggs.cves?.buckets ?? []) {
-      const src = b.top?.hits?.hits?.[0]?._source ?? {};
-      const pkg = b.pkg?.buckets?.[0]?.key;
+    for (const b of cves) {
+      const hosts = requireCount(b.hosts?.value);
+      const pkg = requireBuckets(b.pkg?.buckets)[0]?.key;
+      const samples = b.top?.hits?.hits;
+      if (!Array.isArray(samples) || (b.doc_count > 0 && samples.length === 0) ||
+          !samples.every(hit => isRecord(hit) && isRecord(hit._source))) {
+        throw new Error('Wazuh returned invalid summary samples');
+      }
+      const src = samples[0]?._source ?? {};
       const cond = src.vulnerability?.scanner?.condition;
       const score = src.vulnerability?.score?.base;
       lines.push(
-        `- **${b.key}** — ${b.hosts.value} host(s), ${b.doc_count} installation(s)` +
+        `- **${b.key}** - ${hosts} host(s), ${b.doc_count} installation(s)` +
           (pkg ? `, package \`${pkg}\`` : '') +
           (score !== undefined ? `, CVSS ${score}` : '') +
           (cond ? ` — fix: ${cond}` : ''),

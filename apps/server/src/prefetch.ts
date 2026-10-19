@@ -1,34 +1,19 @@
 /**
- * Deterministic IOC context gathering, done by Harbinger — not by the model.
+ * Server-side IOC context for the Claude CLI analysis path.
  *
- * Why this exists
- * ---------------
- * The Claude CLI analysis path (see analysis-provider.ts) runs with every tool
- * disallowed, so the model cannot call `search_iocs` the way the old Anthropic
- * tool-use loop did. Specter hit the same wall and solved it the same way: run
- * the lookups in app code and inject the results into the prompt. See Specter's
- * alert-history.ts for the full rationale, including the 2026-09-22 test where
- * a scoped Bash grant let the model list private key filenames on the Studio.
+ * ai-client.ts calls buildPrefetchedContext before sending the CLI prompt.
+ * The Anthropic tool-use and Ollama paths do not call it. Keeping lookups here
+ * supplies context without giving the remote model a tool-execution loop.
  *
- * Running the lookups here is strictly better than granting tools:
- *   - deterministic: enrichment always happens, never dependent on the model
- *     deciding to ask (this matters for unattended cron briefs)
- *   - zero added attack surface: no model-controlled command execution
- *   - cheaper: a fixed set of calls instead of an agent loop
- *   - the privacy rule becomes ENFORCED rather than merely requested
+ * External enrichment is limited to the public CISA KEV catalog and CVE IDs
+ * sent to FIRST.org EPSS. Optional exposure queries use the configured Wazuh
+ * Dashboard. Their host/package results can subsequently enter the AI prompt;
+ * the enrichment boundary does not imply that the prompt stays on the LAN.
  *
- * That last point is the important one. Under the tool-use loop, "do not
- * enrich RFC1918 / internal IOCs" was a sentence in the system prompt that the
- * model was trusted to obey. Here it is isPrivateIndicator(), applied in code
- * before anything leaves the network. A prompt instruction is a request; this
- * is a control.
- *
- * What leaves the network, as of the cve-mcp removal:
- *   - CVE IDs only, to CISA KEV and FIRST.org EPSS. Both are public
- *     identifiers; neither call carries a hostname, IP, or hash.
- *   - Nothing else. The Wazuh lookup is to your own LAN appliance.
- * isPrivateIndicator() remains the gate on that boundary: it is applied to the
- * CVE path below, and any future third-party enrichment MUST route through it.
+ * isPrivateIndicator is retained for future host-like enrichment. It is not
+ * called on the current CVE path because dotless CVE IDs would be classified
+ * as internal hostnames. buildCveBlock validates CVE syntax instead. Preserve
+ * failed/unconfigured exposure as unknown, distinct from a successful absence.
  */
 
 import type { IOC } from './types';
@@ -43,7 +28,7 @@ const MAX_ENRICHED_IOCS = 5;
 const MAX_RELATED_IOCS = 25;
 
 // ---------------------------------------------------------------------------
-// Privacy filter — enforced in code, not requested in a prompt
+// Privacy filter reserved for future host-like enrichment
 // ---------------------------------------------------------------------------
 
 const INTERNAL_TLDS = [
@@ -256,17 +241,20 @@ async function buildCveBlock(iocs: IOC[]): Promise<string> {
 
     // The prioritisation call, stated explicitly so the model does not have to
     // infer it (and cannot get it backwards).
-    if (exposure?.present && sig?.inKev) {
+    // Failed Wazuh lookups carry present:false, so absence also requires no error.
+    const kevAvailable = sig?.kevState === 'available';
+    if (exposure?.present && kevAvailable && sig?.inKev) {
       sections.push(
         '', '> **PRIORITY: PATCH NOW.** Present in the environment AND in CISA KEV ' +
           '(confirmed exploitation in the wild).',
       );
     } else if (exposure?.present) {
       sections.push(
-        '', '> **Present in the environment.** Not in KEV, so schedule rather than ' +
-          'emergency-patch, weighted by the EPSS score above.',
+        '', '> **Present in the environment.** ' + (kevAvailable
+          ? 'Not listed in the available KEV catalog. Assess severity, exposure and EPSS; catalog absence alone does not justify a lower patch priority.'
+          : 'Current exploitation evidence from KEV is unavailable. Assess severity and exposure without inferring a negative KEV result.'),
       );
-    } else if (exposure && !exposure.present && sig?.inKev) {
+    } else if (exposure && !exposure.error && !exposure.present && kevAvailable && sig?.inKev) {
       sections.push(
         '', '> **Not in the environment.** In KEV, so worth a detection rule and ' +
           'a watch, but there is nothing here to patch.',

@@ -48,6 +48,7 @@ export interface EnrichmentStatus {
   };
   exploit: {
     connected: boolean;
+    kevState?: 'available' | 'stale' | 'unavailable';
     kevEntries?: number;
     cachedAt?: string;
     lastError?: string;
