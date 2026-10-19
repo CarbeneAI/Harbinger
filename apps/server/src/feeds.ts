@@ -6,11 +6,12 @@
 
 import { readFeedJson, validateCisaKev, validateUrlhaus, validateThreatfox } from './feed-validation';
 import type { FeedName } from './types';
+import type { IOCInput } from './db';
 import { getSeverityFromConfidence } from './types';
 import {
   upsertFeed,
   updateFeedStatus,
-  upsertIOC,
+  commitFeedImport,
   rebuildFTS,
   getFeeds,
   getStats,
@@ -48,7 +49,7 @@ function isIPAddress(host: string): boolean {
   return /^\d+\.\d+\.\d+\.\d+$/.test(host);
 }
 
-/** abuse.ch Auth-Key — register free at https://auth.abuse.ch/ */
+/** abuse.ch Auth-Key - register free at https://auth.abuse.ch/ */
 const ABUSE_CH_AUTH_KEY = process.env.ABUSE_CH_AUTH_KEY || '';
 
 /** Fetch with a 30-second timeout via AbortController. */
@@ -66,7 +67,7 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise
 // CISA Known Exploited Vulnerabilities (KEV) poller
 // ---------------------------------------------------------------------------
 
-async function pollCisaKev(feedId: number, url: string): Promise<number> {
+async function pollCisaKev(url: string): Promise<IOCInput[]> {
   console.log('[feeds] Polling CISA KEV...');
 
   const response = await fetchWithTimeout(url);
@@ -76,7 +77,7 @@ async function pollCisaKev(feedId: number, url: string): Promise<number> {
 
   const vulnerabilities: any[] = validateCisaKev(await readFeedJson(response, 'cisa_kev'));
 
-  let count = 0;
+  const iocs: IOCInput[] = [];
 
   for (const vuln of vulnerabilities) {
     const cveId: string = vuln.cveID ?? '';
@@ -89,7 +90,7 @@ async function pollCisaKev(feedId: number, url: string): Promise<number> {
     if (vuln.vendorProject) tags.push(vuln.vendorProject);
     if (vuln.product) tags.push(vuln.product);
 
-    upsertIOC(feedId, {
+    iocs.push({
       ioc_type: 'cve',
       value: cveId,
       severity,
@@ -101,20 +102,19 @@ async function pollCisaKev(feedId: number, url: string): Promise<number> {
       last_seen: dateAdded,
     });
 
-    count++;
   }
 
-  return count;
+  return iocs;
 }
 
 // ---------------------------------------------------------------------------
 // URLhaus poller
 // ---------------------------------------------------------------------------
 
-async function pollUrlhaus(feedId: number, url: string): Promise<number> {
+async function pollUrlhaus(url: string): Promise<IOCInput[]> {
   console.log('[feeds] Polling URLhaus...');
   if (!ABUSE_CH_AUTH_KEY) {
-    throw new Error('ABUSE_CH_AUTH_KEY not set — register free at https://auth.abuse.ch/');
+    throw new Error('ABUSE_CH_AUTH_KEY not set - register free at https://auth.abuse.ch/');
   }
 
   const response = await fetchWithTimeout(url, {
@@ -126,7 +126,7 @@ async function pollUrlhaus(feedId: number, url: string): Promise<number> {
 
   const urls: any[] = validateUrlhaus(await readFeedJson(response, 'urlhaus'));
 
-  let count = 0;
+  const iocs: IOCInput[] = [];
 
   for (const entry of urls) {
     const urlValue: string = entry.url ?? '';
@@ -140,8 +140,8 @@ async function pollUrlhaus(feedId: number, url: string): Promise<number> {
 
     const dateAdded = entry.date_added ? new Date(entry.date_added).getTime() : Date.now();
 
-    // Upsert the URL IOC
-    upsertIOC(feedId, {
+    // Prepare the URL IOC; persistence happens after the whole batch is mapped.
+    iocs.push({
       ioc_type: 'url',
       value: urlValue,
       severity,
@@ -149,39 +149,38 @@ async function pollUrlhaus(feedId: number, url: string): Promise<number> {
       first_seen: dateAdded,
       last_seen: dateAdded,
     });
-    count++;
 
-    // Extract the host; if it is not a bare IP, also upsert a domain IOC
+    // Keep parsing failures separate from persistence failures. Only a malformed
+    // URL skips domain extraction; database errors must fail the entire batch.
+    let host: string;
     try {
-      const parsed = new URL(urlValue);
-      const host = parsed.hostname;
-      if (host && !isIPAddress(host)) {
-        upsertIOC(feedId, {
-          ioc_type: 'domain',
-          value: host,
-          severity,
-          tags,
-          first_seen: dateAdded,
-          last_seen: dateAdded,
-        });
-        count++;
-      }
+      host = new URL(urlValue).hostname;
     } catch {
-      // Malformed URL — skip domain extraction
+      continue;
+    }
+    if (host && !isIPAddress(host)) {
+      iocs.push({
+        ioc_type: 'domain',
+        value: host,
+        severity,
+        tags,
+        first_seen: dateAdded,
+        last_seen: dateAdded,
+      });
     }
   }
 
-  return count;
+  return iocs;
 }
 
 // ---------------------------------------------------------------------------
 // ThreatFox poller
 // ---------------------------------------------------------------------------
 
-async function pollThreatfox(feedId: number, url: string): Promise<number> {
+async function pollThreatfox(url: string): Promise<IOCInput[]> {
   console.log('[feeds] Polling ThreatFox...');
   if (!ABUSE_CH_AUTH_KEY) {
-    throw new Error('ABUSE_CH_AUTH_KEY not set — register free at https://auth.abuse.ch/');
+    throw new Error('ABUSE_CH_AUTH_KEY not set - register free at https://auth.abuse.ch/');
   }
 
   const response = await fetchWithTimeout(url, {
@@ -195,7 +194,7 @@ async function pollThreatfox(feedId: number, url: string): Promise<number> {
   }
 
   const entries: any[] = validateThreatfox(await readFeedJson(response, 'threatfox'));
-  let count = 0;
+  const iocs: IOCInput[] = [];
 
   for (const entry of entries) {
     const rawType: string = entry.ioc_type ?? '';
@@ -239,7 +238,7 @@ async function pollThreatfox(feedId: number, url: string): Promise<number> {
     const firstSeen = entry.first_seen ? new Date(entry.first_seen).getTime() : Date.now();
     const lastSeen = entry.last_seen ? new Date(entry.last_seen).getTime() : firstSeen;
 
-    upsertIOC(feedId, {
+    iocs.push({
       ioc_type: iocType,
       value,
       severity,
@@ -247,10 +246,9 @@ async function pollThreatfox(feedId: number, url: string): Promise<number> {
       first_seen: firstSeen,
       last_seen: lastSeen,
     });
-    count++;
   }
 
-  return count;
+  return iocs;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,26 +278,26 @@ export async function pollAllFeeds(): Promise<void> {
     feedIdByName[row.name] = row.id;
   }
 
-  const pollers: Array<{ name: FeedName; fn: () => Promise<number> }> = [
+  const pollers: Array<{ name: FeedName; fn: () => Promise<IOCInput[]> }> = [
     {
       name: 'cisa_kev',
       fn: () => {
         const cfg = FEED_CONFIGS.find((c) => c.name === 'cisa_kev')!;
-        return pollCisaKev(feedIdByName['cisa_kev'], cfg.url);
+        return pollCisaKev(cfg.url);
       },
     },
     {
       name: 'urlhaus',
       fn: () => {
         const cfg = FEED_CONFIGS.find((c) => c.name === 'urlhaus')!;
-        return pollUrlhaus(feedIdByName['urlhaus'], cfg.url);
+        return pollUrlhaus(cfg.url);
       },
     },
     {
       name: 'threatfox',
       fn: () => {
         const cfg = FEED_CONFIGS.find((c) => c.name === 'threatfox')!;
-        return pollThreatfox(feedIdByName['threatfox'], cfg.url);
+        return pollThreatfox(cfg.url);
       },
     },
   ];
@@ -307,13 +305,15 @@ export async function pollAllFeeds(): Promise<void> {
   const results = await Promise.allSettled(
     pollers.map(async ({ name, fn }) => {
       try {
-        const iocCount = await fn();
-        updateFeedStatus(name, 'ok', { lastCount: iocCount });
+        // Fetch, validate and map before opening a synchronous transaction.
+        const iocs = await fn();
+        const iocCount = commitFeedImport(name, feedIdByName[name], iocs);
         console.log(`[feeds] ${name}: ingested ${iocCount} IOCs`);
         return iocCount;
       } catch (err: any) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[feeds] ${name} failed: ${msg}`);
+        // commitFeedImport rolls back first, including the successful count.
         updateFeedStatus(name, 'error', { errorMsg: msg });
         throw err;
       }
@@ -336,7 +336,7 @@ export async function pollAllFeeds(): Promise<void> {
 
   const stats = getStats();
   console.log(
-    `[feeds] Poll cycle complete in ${elapsed}s — ${succeeded}/${pollers.length} feeds OK, ` +
+    `[feeds] Poll cycle complete in ${elapsed}s - ${succeeded}/${pollers.length} feeds OK, ` +
       `${total} IOCs this cycle, ${stats.totalIOCs} total in DB`,
   );
 }
@@ -355,7 +355,7 @@ export function startFeedScheduler(): void {
   });
 
   if (needsImmediatePoll) {
-    console.log('[feeds] Stale or unpopulated feeds detected — firing immediate poll');
+    console.log('[feeds] Stale or unpopulated feeds detected - firing immediate poll');
     pollAllFeeds().catch((err) => console.error('[feeds] Immediate poll error:', err));
   }
 
@@ -363,5 +363,5 @@ export function startFeedScheduler(): void {
     pollAllFeeds().catch((err) => console.error('[feeds] Scheduled poll error:', err));
   }, POLL_INTERVAL_MS);
 
-  console.log(`[feeds] Scheduler started — polling every ${POLL_INTERVAL_MS / 60_000} minutes`);
+  console.log(`[feeds] Scheduler started - polling every ${POLL_INTERVAL_MS / 60_000} minutes`);
 }

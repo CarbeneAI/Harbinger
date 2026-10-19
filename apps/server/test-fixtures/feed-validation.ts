@@ -27,6 +27,12 @@ mock.module('../src/db', () => ({
     assert.ok(feed);
     writes.push({ feed, value });
   },
+  commitFeedImport: (feed: FeedName, id: number, iocs: Record<string, any>[]) => {
+    assert.equal(id, ids[feed]);
+    for (const value of iocs) writes.push({ feed, value });
+    statuses.push({ feed, status: 'ok', options: { lastCount: iocs.length } });
+    return iocs.length;
+  },
   rebuildFTS: () => { rebuilds++; },
   getFeeds: () => feeds.map(name => ({ id: ids[name], name })),
   getStats: () => ({ totalIOCs: writes.length }),

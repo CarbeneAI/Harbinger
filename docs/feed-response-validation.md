@@ -1,4 +1,4 @@
-# Feed response validation
+# Feed import integrity
 
 HTTP 200 does not establish that a feed query succeeded. Harbinger validates each
 complete response against the consumed field contract before the first IOC
@@ -64,17 +64,33 @@ They do not echo response status values, rejected records, decoder exceptions,
 or credentials. This does not sanitize every transport or database exception;
 the existing orchestration still surfaces other error messages.
 
-Prevalidation prevents writes caused by a partly malformed response. Database
-failures after a valid response can still leave partial writes: there is no new
-transaction, rollback, schema migration or atomicity guarantee. A feed error does
-not erase older database rows or turn another feed's successful count into zero.
+## Atomic persistence after validation
+
+Each poller fetches, validates and maps its complete response before opening a
+synchronous SQLite transaction. `commitFeedImport` commits every IOC upsert and
+the successful feed status/count together. A failed write or status update rolls
+back the whole batch, including changes to existing rows and feed ownership.
+The caller then attempts to record the feed error while preserving the last
+successful count. A database failure that also prevents this error-status write
+cannot guarantee persisted diagnostics. Other feeds still commit independently. A later successful poll clears
+the error; a valid empty batch reports zero without deleting historical rows.
+
+IOC writes and status updates use one prepared statement each so SQLite errors
+propagate into the transaction. Regression fixtures inject real SQLite trigger
+failures; they do not mock the persistence layer. Keep network requests and all
+other asynchronous work outside the transaction.
+
 A successful count remains the mapper's IOC upsert-operation count, which may
-include URL plus domain operations, not unique new rows.
+include URL plus domain operations or repeated values, not unique new rows.
+The full-text index is rebuilt after all feeds settle, outside these per-feed
+transactions. An index rebuild failure is still logged separately and does not
+roll back committed IOCs. This change does not make overlapping poll cycles
+single-flight or provide pagination, crash-recovery testing or feed completeness.
 
 ## Proposed followups
 
 Before claiming durable, lossless or complete ingestion, review database
-transactions/failure recovery, recent-feed window limits, pagination, retries,
+crash recovery, recent-feed window limits, pagination, retries,
 provider schema/version changes, IOC semantic validity, and timestamp/timezone
 policy separately. URLhaus documents a bounded recent window, and ThreatFox's
 request still asks for seven days; this change does not fetch older data or
@@ -90,19 +106,25 @@ bun --no-env-file test
 bunx --no-install tsc --noEmit
 ```
 
-The standalone upstream-based branch has 118 server tests: 28 existing cases
-and 90 response fixtures. Focus the new cases with
+The standalone upstream-based branch has 126 server tests: 28 existing cases,
+90 response fixtures and 8 real-database transaction scenarios. Focus the new cases with
 `bun --no-env-file test src/feed-validation.test.ts`. The new workflow runs the
 full locked suite and TypeScript, including fixture files, on Ubuntu and macOS.
 The corrected server lock matches the other reviewed Harbinger contributions;
 no dependency is added to the manifest.
 
-Fixtures call production `pollAllFeeds` in isolated Bun children, replacing the
+Response fixtures call production `pollAllFeeds` in isolated Bun children, replacing the
 database and fetch with in-process stubs. They exercise valid/empty data,
 HTTP-200 error envelopes, bad identities/dates/tags, valid-first/bad-later rows,
 nullable and absent fallbacks, unsupported types, original mappings, independent
 statuses/counts, and fixed validation diagnostics. Every rejected feed makes zero
-IOC writes while its peers succeed. No live feed, credentials, database, model,
-provider or scheduler is used. Do not move validation into the upsert loop: every
-row must be checked before the first IOC write. Preserve the distinction between
-response rejection and database atomicity when changing this contract.
+IOC writes while its peers succeed. No live feed, credentials, model, provider or scheduler is used. Transaction
+fixtures use an owned temporary SQLite database, cleaned after each scenario.
+They cover insert and overwrite rollback, derived-domain failures, successful
+status-update failures, independent searchable feeds, retry, empty results and
+duplicate operation counts. Focus them with
+`bun --no-env-file test src/feed-atomicity.test.ts`.
+
+Do not move validation into the upsert loop: every row must be checked before the
+first IOC write. Preserve both complete-response validation and atomic
+persistence when changing the contract.
