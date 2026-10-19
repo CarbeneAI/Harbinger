@@ -125,11 +125,12 @@ export function updateFeedStatus(
 ): void {
   const d = getDB();
   const now = Date.now();
-  d.exec(`
+  // A prepared statement propagates SQLite write failures to the transaction.
+  d.query(`
     UPDATE feeds
     SET status = ?, last_poll = ?, last_count = COALESCE(?, last_count), error_msg = ?
     WHERE name = ?;
-  `, [status, now, opts.lastCount ?? null, opts.errorMsg ?? null, name]);
+  `).run(status, now, opts.lastCount ?? null, opts.errorMsg ?? null, name);
 }
 
 export function getFeeds(): Feed[] {
@@ -138,15 +139,18 @@ export function getFeeds(): Feed[] {
 
 // ── IOC operations ────────────────────────────────────────────────────────────
 
+export type IOCInput = Omit<IOC, 'id' | 'feed_id' | 'feed_name'>;
+
 export function upsertIOC(
   feedId: number,
-  ioc: Omit<IOC, 'id' | 'feed_id' | 'feed_name'>,
+  ioc: IOCInput,
 ): void {
   const d = getDB();
   const tagsJson = JSON.stringify(ioc.tags ?? []);
   const now = Date.now();
 
-  d.exec(`
+  // Execute exactly one statement so a failed write cannot appear successful.
+  d.query(`
     INSERT INTO iocs (feed_id, ioc_type, value, severity, title, description, source_ref, tags, first_seen, last_seen)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(value, ioc_type) DO UPDATE SET
@@ -157,7 +161,7 @@ export function upsertIOC(
       source_ref  = excluded.source_ref,
       tags        = excluded.tags,
       last_seen   = excluded.last_seen;
-  `, [
+  `).run(
     feedId,
     ioc.ioc_type,
     ioc.value,
@@ -168,7 +172,20 @@ export function upsertIOC(
     tagsJson,
     ioc.first_seen ?? now,
     ioc.last_seen ?? now,
-  ]);
+  );
+}
+
+/** Commit one validated feed batch and its successful status together.
+ * No asynchronous work belongs inside this transaction. A thrown write or
+ * status error restores inserts and overwritten rows before the caller records
+ * the feed error. Counts retain the existing upsert-operation semantics.
+ */
+export function commitFeedImport(name: FeedName, feedId: number, iocs: readonly IOCInput[]): number {
+  return getDB().transaction(() => {
+    for (const ioc of iocs) upsertIOC(feedId, ioc);
+    updateFeedStatus(name, 'ok', { lastCount: iocs.length });
+    return iocs.length;
+  })();
 }
 
 export function rebuildFTS(): void {

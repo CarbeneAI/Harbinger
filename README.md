@@ -231,8 +231,8 @@ Enrichment tools forward IOC values (IPs, domains, URLs, hashes, CVE IDs) to thi
 |--------|----------|-------------|
 | GET | `/health` | Health check with IOC count |
 | GET | `/stats` | IOC counts by type, severity, feed |
-| GET | `/feeds` | Feed status and last poll times |
-| POST | `/feeds/poll` | Trigger immediate feed poll |
+| GET | `/feeds` | Feed import status and last poll times, not search-index readiness; see [feed import integrity](docs/feed-response-validation.md) |
+| POST | `/feeds/poll` | Request or join a feed cycle; immediate acknowledgement, not import or search-index completion. See [failure and recovery](docs/feed-response-validation.md#search-index-failure-and-recovery). |
 | GET | `/iocs?search=&type=&severity=&feed=&limit=&offset=` | Query IOCs with filters |
 | GET | `/iocs/:id` | Get single IOC by ID |
 | POST | `/iocs/search` | Full-text search IOCs |
