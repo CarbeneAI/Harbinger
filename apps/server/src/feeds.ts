@@ -4,6 +4,7 @@
  * and upserts IOCs into the local SQLite database.
  */
 
+import { readFeedJson, validateCisaKev, validateUrlhaus, validateThreatfox } from './feed-validation';
 import type { FeedName } from './types';
 import { getSeverityFromConfidence } from './types';
 import {
@@ -73,8 +74,7 @@ async function pollCisaKev(feedId: number, url: string): Promise<number> {
     throw new Error(`CISA KEV returned HTTP ${response.status}`);
   }
 
-  const json = (await response.json()) as any;
-  const vulnerabilities: any[] = json.vulnerabilities ?? [];
+  const vulnerabilities: any[] = validateCisaKev(await readFeedJson(response, 'cisa_kev'));
 
   let count = 0;
 
@@ -124,8 +124,7 @@ async function pollUrlhaus(feedId: number, url: string): Promise<number> {
     throw new Error(`URLhaus returned HTTP ${response.status}`);
   }
 
-  const json = (await response.json()) as any;
-  const urls: any[] = json.urls ?? [];
+  const urls: any[] = validateUrlhaus(await readFeedJson(response, 'urlhaus'));
 
   let count = 0;
 
@@ -195,12 +194,7 @@ async function pollThreatfox(feedId: number, url: string): Promise<number> {
     throw new Error(`ThreatFox returned HTTP ${response.status}`);
   }
 
-  const json = (await response.json()) as any;
-  if (json.query_status !== 'ok') {
-    throw new Error(`ThreatFox query_status: ${json.query_status}`);
-  }
-
-  const entries: any[] = json.data ?? [];
+  const entries: any[] = validateThreatfox(await readFeedJson(response, 'threatfox'));
   let count = 0;
 
   for (const entry of entries) {

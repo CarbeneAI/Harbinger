@@ -1,0 +1,43 @@
+name: Feed response validation
+
+on:
+  pull_request:
+    paths:
+      - apps/server/**
+      - README.md
+      - docs/feed-response-validation.md
+      - .github/workflows/feed-response-validation.yml
+  push:
+    paths:
+      - apps/server/**
+      - README.md
+      - docs/feed-response-validation.md
+      - .github/workflows/feed-response-validation.yml
+
+permissions:
+  contents: read
+
+jobs:
+  feed-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.3.14
+      - name: Install locked server dependencies
+        working-directory: apps/server
+        run: bun install --frozen-lockfile --no-env-file
+      - name: Test feed responses offline
+        working-directory: apps/server
+        run: bun --no-env-file test
+      - name: Typecheck production and fixture code
+        working-directory: apps/server
+        run: bunx --no-install tsc --noEmit
