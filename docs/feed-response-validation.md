@@ -83,9 +83,34 @@ other asynchronous work outside the transaction.
 A successful count remains the mapper's IOC upsert-operation count, which may
 include URL plus domain operations or repeated values, not unique new rows.
 The full-text index is rebuilt after all feeds settle, outside these per-feed
-transactions. An index rebuild failure is still logged separately and does not
-roll back committed IOCs. This does not provide pagination, crash-recovery
-testing or feed completeness.
+transactions. A rebuild failure does not roll back committed IOCs or successful
+feed metadata, but it rejects the cycle as described below. This does not provide
+pagination, crash-recovery testing or feed completeness.
+
+## Search-index failure and recovery
+
+If SQLite's FTS rebuild throws, `pollAllFeeds()` logs the existing rebuild error
+and rejects with `Feed search index rebuild failed`. It does not print the normal
+`Poll cycle complete` summary. Callers joined to the active cycle observe that
+same rejection. Ownership remains held through failure logging, including
+synchronous reentry, and the existing `finally` releases it after settlement.
+A later explicit or scheduled cycle can import and rebuild normally; this adds
+no queued catch-up cycle, immediate retry or new retry policy.
+
+Already committed per-feed IOC rows, successful status and counts remain intact.
+Feed status describes its import, not the derived search index. Ordinary listing
+can see committed rows while a text `MATCH` query still misses them. `/health`
+also continues to report ordinary database counts and does not expose FTS
+freshness or readiness. This change makes programmatic cycle failure and logs
+honest; it does not prevent stale search results or add persistent health state.
+
+The regression fault enables SQLite's real `query_only` restriction only around
+the native rebuild statement and restores it immediately afterward. Tests prove
+preserved import state, stale search after failure, and actual `MATCH` recovery
+without duplicate logical IOC rows on a later cycle. They do not establish
+partial mutation of a failed rebuild: the implementation uses one SQLite
+rebuild statement. Feed failures with a successful rebuild retain their existing
+per-feed accounting and do not independently reject the whole cycle.
 
 ## One active feed cycle per process
 
@@ -99,7 +124,8 @@ The coordinator owns the slot before invoking fetch, including synchronous
 fetch reentry. It holds ownership through response-body reading, validation,
 mapping, each synchronous import, `Promise.allSettled`, the FTS rebuild,
 statistics and final logging. A `finally` clears ownership after the actual
-cycle settles, including rejection before fetch or during final statistics.
+cycle settles, including rejection before fetch, during rebuilding or during
+final statistics.
 Individual feed failures continue to record their existing status when possible;
 they do not reject the whole cycle merely because a feed failed. Per-feed
 IOC/status transactions and successful peers are preserved.
@@ -116,18 +142,23 @@ can retry initialization. This is not a scheduler stop/reconfiguration API.
 with message `Poll started or already running`. It acknowledges requesting or
 joining work, not completed import success or a queued second cycle. The existing
 client ignores the response body and still performs its later refresh. Manual
-cycle rejections are logged, as scheduler rejections already were; clients must
-inspect feed status separately. No cycle ID, progress API or UI polling redesign
-is added.
+cycle rejections are logged, as scheduler rejections already were. Feed status
+alone cannot identify an FTS failure, so the acknowledgement and later feed
+refresh do not establish search readiness. Review cycle logs for the index-stage
+failure. No cycle ID, progress API or UI polling redesign is added.
 
 This guard is process-local. Multiple Harbinger processes can still run separate
-cycles against the same database. There is no timeout or cancellation added:
-the existing fetch timer ends at response headers, so a never-settling body can
-hold the active cycle indefinitely. Releasing a slot with `Promise.race` while
-underlying work continues would break this contract and is not used. Full-body
-deadlines require their own runtime/transport fixtures. FTS failure visibility,
-successful-versus-attempt timestamps, recent-feed windows, retry/backoff,
-provenance and durable recovery remain separate proposals.
+cycles against the same database. Considered alone, this PR6 contribution adds no
+timeout or cancellation: its existing fetch timer ends at headers, so a stalled
+body can hold the active cycle indefinitely. Companion
+[PR7](https://github.com/CarbeneAI/Harbinger/pull/7) independently retains the native
+30-second deadline through response-body reads, with actual transport fixtures.
+That deadline does not interrupt synchronous JSON parsing, validation, SQLite or
+FTS execution and is not a whole-cycle budget. Releasing ownership with
+`Promise.race` while underlying work continues would break the settlement
+contract and is not used. Persistent index health, successful-versus-attempt
+timestamps, recent-feed windows, retry/backoff, provenance and durable recovery
+remain separate proposals.
 
 ## Proposed followups
 
@@ -148,9 +179,8 @@ bun --no-env-file test
 bunx --no-install tsc --noEmit
 ```
 
-The standalone upstream-based branch has 145 server tests: 28 existing cases,
-90 response fixtures, 8 real-database transaction scenarios and 19 cycle-coordination
-scenarios. Focus response cases with
+The standalone suite covers existing behavior, response validation, real-database
+transactions, cycle coordination and search-index failure/recovery. Focus response cases with
 `bun --no-env-file test src/feed-validation.test.ts`. The new workflow runs the
 full locked suite and TypeScript, including fixture files, on Ubuntu and macOS.
 The corrected server lock matches the other reviewed Harbinger contributions;
@@ -180,11 +210,22 @@ and later recovery after whole-cycle rejection. The HTTP case runs the real
 server entrypoint on an ephemeral loopback port and joins manual and scheduled
 requests while a body is held. It stops the server and cleans its temporary data.
 Focus these with `bun --no-env-file test src/feed-single-flight.test.ts`.
-All 19 fail against the prior implementation and pass with coordination.
-No live feed, model, credentials or production service is involved.
+The original coordination regressions failed against the preceding implementation.
+The FTS recovery case now expects the intentional index-stage rejection while
+retaining its later-recovery assertions. No live feed, model, credentials or
+production service is involved.
+
+Three additional real-SQLite scenarios cover joined callers, repeated failures,
+synchronous failure-log reentry, and an actual manual HTTP acknowledgement while
+the cycle is held. The preceding code fails all three because it resolves after
+the native rebuild error. The fixed cases preserve committed rows and statuses,
+observe stale `MATCH` results, restore write ability and prove actual rebuild
+recovery. The manual case also verifies the existing rejection log carries the
+fixed stage error. Focus them with
+`bun --no-env-file test src/feed-fts-recovery.test.ts`.
 
 Do not move validation into the upsert loop: every row must be checked before the
 first IOC write. Preserve both complete-response validation and atomic
 persistence when changing the contract.
 
-Cycle-coordination followup contributed by Ryan Wentzel, https://ryanwentzel.me.
+Cycle coordination and search-index recovery contributed by Ryan Wentzel, https://ryanwentzel.me.

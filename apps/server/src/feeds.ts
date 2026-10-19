@@ -338,6 +338,9 @@ async function runPollCycle(): Promise<void> {
     console.log('[feeds] FTS index rebuilt');
   } catch (err) {
     console.error('[feeds] FTS rebuild failed:', err);
+    // Feed transactions are already committed, but search freshness is not established.
+    // Reject the shared attempt rather than emit its normal completion summary.
+    throw new Error('Feed search index rebuild failed');
   }
 
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);

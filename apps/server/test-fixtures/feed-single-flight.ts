@@ -214,6 +214,9 @@ try {
       assert.equal(requests, scenario === 'initial-read-recovery' ? 0 : 3);
       assert.equal(count('ioc'), scenario === 'initial-read-recovery' ? 0 : 4, 'stats failure does not undo prior commits');
       db.exec('ALTER TABLE unavailable_feeds RENAME TO feeds');
+    } else if (scenario === 'fts-recovery') {
+      await assert.rejects(active, { message: 'Feed search index rebuild failed' });
+      assert.equal(finishes, 0, 'a failed rebuild must not report cycle completion');
     } else await active;
     for (const reentry of reentries) assert.strictEqual(reentry, active, 'the guard must cover fetch, import, FTS and final logging');
     if (scenario.endsWith('-reentry')) assert.equal(reentered, true);

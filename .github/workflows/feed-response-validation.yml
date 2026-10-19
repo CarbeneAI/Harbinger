@@ -35,7 +35,7 @@ jobs:
       - name: Install locked server dependencies
         working-directory: apps/server
         run: bun install --frozen-lockfile --no-env-file
-      - name: Test feed responses, atomic imports and cycle coordination offline
+      - name: Test feed responses, atomic imports, cycle coordination and index recovery offline
         working-directory: apps/server
         run: bun --no-env-file test
       - name: Typecheck production and fixture code
