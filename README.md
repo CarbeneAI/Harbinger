@@ -277,6 +277,8 @@ Harbinger downloads the public KEV catalog and sends CVE IDs to FIRST.org. Wazuh
 
 Pull requests welcome. Please open an issue first to discuss major changes.
 
+The [proposed contributor roadmap](ROADMAP.md) describes reliability priorities and acceptance criteria for maintainer discussion alongside the product roadmap above.
+
 ### Offline checks for contributors and coding agents
 
 Run these from the repository root with Bun 1.3.14 to match [CI](.github/workflows/ci.yml):
