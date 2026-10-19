@@ -39,6 +39,8 @@ const FEED_CONFIGS = [
 ];
 
 const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS || '3600000'); // 1 hour default
+let activeCycle: Promise<void> | null = null;
+let schedulerTimer: ReturnType<typeof setInterval> | null = null;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -267,7 +269,17 @@ function initFeeds(): void {
 /**
  * Poll all three feeds concurrently, then rebuild the full-text search index.
  */
-export async function pollAllFeeds(): Promise<void> {
+export function pollAllFeeds(): Promise<void> {
+  if (activeCycle !== null) return activeCycle;
+  // Publish ownership before fetch or any synchronous callback can reenter.
+  // Joiners share settlement; they do not queue another cycle.
+  activeCycle = Promise.resolve().then(runPollCycle).finally(() => {
+    activeCycle = null;
+  });
+  return activeCycle;
+}
+
+async function runPollCycle(): Promise<void> {
   const start = Date.now();
   console.log(`[feeds] Starting poll cycle at ${new Date(start).toISOString()}`);
 
@@ -346,6 +358,7 @@ export async function pollAllFeeds(): Promise<void> {
  * Fires an immediate poll if any feed has never been polled or is stale.
  */
 export function startFeedScheduler(): void {
+  if (schedulerTimer !== null) return;
   initFeeds();
 
   const now = Date.now();
@@ -354,14 +367,15 @@ export function startFeedScheduler(): void {
     return !f.last_poll || now - f.last_poll > POLL_INTERVAL_MS;
   });
 
+  // Own the timer before the immediate cycle or its logs can reenter startup.
+  schedulerTimer = setInterval(() => {
+    pollAllFeeds().catch((err) => console.error('[feeds] Scheduled poll error:', err));
+  }, POLL_INTERVAL_MS);
+
   if (needsImmediatePoll) {
     console.log('[feeds] Stale or unpopulated feeds detected - firing immediate poll');
     pollAllFeeds().catch((err) => console.error('[feeds] Immediate poll error:', err));
   }
-
-  setInterval(() => {
-    pollAllFeeds().catch((err) => console.error('[feeds] Scheduled poll error:', err));
-  }, POLL_INTERVAL_MS);
 
   console.log(`[feeds] Scheduler started - polling every ${POLL_INTERVAL_MS / 60_000} minutes`);
 }

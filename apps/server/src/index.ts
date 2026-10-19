@@ -83,8 +83,8 @@ const server = Bun.serve({
 
     // POST /feeds/poll
     if (path === '/feeds/poll' && req.method === 'POST') {
-      pollAllFeeds(); // fire and forget
-      return respond({ triggered: true, message: 'Poll started' });
+      pollAllFeeds().catch((err) => console.error('[feeds] Manual poll error:', err));
+      return respond({ triggered: true, message: 'Poll started or already running' });
     }
 
     // GET /enrichment/status — environment exposure + exploitation signal health.
