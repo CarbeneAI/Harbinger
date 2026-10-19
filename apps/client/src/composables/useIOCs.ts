@@ -1,15 +1,9 @@
 import { ref, onUnmounted } from 'vue';
 import type { IOC, IOCType, SeverityLevel, FeedName } from '../types';
 
-function getApiUrl(): string {
-  if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;
-  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-    return 'http://localhost:4001';
-  }
-  return 'https://harbinger-api.home.carbeneai.com';
-}
-
-export const API_URL = getApiUrl();
+// Same-origin by default: Vite or the authenticated deployment proxy routes /api.
+// Separate-origin deployments can set VITE_API_URL at client build time.
+export const API_URL = import.meta.env.VITE_API_URL || '/api';
 
 const LIMIT = 50;
 

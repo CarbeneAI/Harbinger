@@ -24,6 +24,18 @@ fi
 PORT="${PORT:-4001}"
 CLIENT_PORT="${CLIENT_PORT:-5174}"
 
+# Connect to a concrete loopback address when the configured bind is a wildcard.
+url_host() {
+  case "$1" in
+    0.0.0.0) printf '%s' '127.0.0.1' ;;
+    ::) printf '%s' '[::1]' ;;
+    *:*) printf '[%s]' "$1" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+API_URL="http://$(url_host "${HARBINGER_API_HOST:-127.0.0.1}"):${PORT}"
+CLIENT_URL="http://$(url_host "${HARBINGER_CLIENT_HOST:-127.0.0.1}"):${CLIENT_PORT}"
+
 SERVER_PID_FILE="/tmp/harbinger-server.pid"
 CLIENT_PID_FILE="/tmp/harbinger-client.pid"
 
@@ -38,21 +50,21 @@ start() {
 
   # Wait for server
   for i in {1..15}; do
-    curl -s "http://localhost:${PORT}/health" >/dev/null 2>&1 && break
+    curl -s "${API_URL}/health" >/dev/null 2>&1 && break
     sleep 1
   done
 
   # Start client via Bun (Node CJS chokes on the ESM postcss.config.js)
   cd "$DASHBOARD_DIR/apps/client"
-  bun ./node_modules/.bin/vite --port "$CLIENT_PORT" --host 0.0.0.0 >> "$LOG_DIR/client.log" 2>&1 &
+  bun ./node_modules/.bin/vite --port "$CLIENT_PORT" --host "${HARBINGER_CLIENT_HOST:-127.0.0.1}" >> "$LOG_DIR/client.log" 2>&1 &
   echo $! > "$CLIENT_PID_FILE"
   echo "  Client PID: $(cat $CLIENT_PID_FILE)"
 
   echo ""
   echo "Harbinger is running:"
-  echo "  Dashboard: http://localhost:${CLIENT_PORT}"
-  echo "  API:       http://localhost:${PORT}"
-  echo "  Health:    http://localhost:${PORT}/health"
+  echo "  Dashboard: ${CLIENT_URL}"
+  echo "  API:       ${API_URL}"
+  echo "  Health:    ${API_URL}/health"
 }
 
 stop() {
@@ -82,7 +94,7 @@ status() {
   done
   if [ "$running" -eq 2 ]; then
     echo "Harbinger is running (server + client)"
-    curl -s "http://localhost:${PORT}/health" | python3 -m json.tool 2>/dev/null
+    curl -s "${API_URL}/health" | python3 -m json.tool 2>/dev/null
   elif [ "$running" -gt 0 ]; then
     echo "Harbinger is partially running ($running/2 processes)"
   else
