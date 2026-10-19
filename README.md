@@ -244,6 +244,11 @@ Enrichment tools forward IOC values (IPs, domains, URLs, hashes, CVE IDs) to thi
 
 ## Manage Script
 
+For the optional Wazuh inventory connection, see [Wazuh HTTPS trust](docs/wazuh-tls.md)
+before starting. Certificate and hostname verification are enabled by default;
+private deployments can configure a CA certificate bundle without weakening
+other outbound connections.
+
 ```bash
 ./manage.sh start    # Start server + client
 ./manage.sh stop     # Stop all processes
