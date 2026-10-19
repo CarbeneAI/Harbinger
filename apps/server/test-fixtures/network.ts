@@ -20,7 +20,7 @@ mock.module('../src/db', () => ({
   initDB: () => ({}), getStats: effect, getFeeds: () => [], queryIOCs: effect,
   getIOCById: effect, getBriefs: effect, getBriefById: effect,
 }));
-mock.module('../src/feeds', () => ({ startFeedScheduler() {}, pollAllFeeds: effect }));
+mock.module('../src/feeds', () => ({ startFeedScheduler() {}, pollAllFeeds: async () => { effect(); } }));
 mock.module('../src/ai-client', () => ({
   sendChatMessage: effect, generateThreatBrief: effect, generateDailyThreatBrief: effect,
   generateWeeklyStrategicBrief: effect, getOllamaModels: effect, QUICK_PROMPTS: [],
