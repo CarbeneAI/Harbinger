@@ -306,14 +306,33 @@ function executeSearchIocs(params: {
 // Ollama
 // ---------------------------------------------------------------------------
 
+const OLLAMA_MODEL_DISCOVERY_TIMEOUT_MS = 30_000;
+const OLLAMA_GENERATION_TIMEOUT_MS = 120_000;
+
+/**
+ * The deadline covers fetch and asynchronous response-body reads. JSON parsing
+ * after the body arrives is synchronous JavaScript and cannot be preempted.
+ */
 export async function getOllamaModels(ollamaUrl: string): Promise<string[]> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OLLAMA_MODEL_DISCOVERY_TIMEOUT_MS);
   try {
-    const response = await fetch(`${ollamaUrl}/api/tags`);
-    if (!response.ok) return [];
+    const response = await fetch(`${ollamaUrl}/api/tags`, { signal: controller.signal });
+    if (!response.ok) {
+      controller.abort();
+      try {
+        await response.body?.cancel();
+      } catch {
+        // Discovery has always failed soft. The response body is not diagnostic data.
+      }
+      return [];
+    }
     const data = (await response.json()) as any;
     return (data.models ?? []).map((m: any) => m.name as string);
   } catch {
     return [];
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -324,6 +343,7 @@ async function sendOllamaMessage(
   ollamaModel: string,
   iocContext?: IOC[],
 ): Promise<PAIChatResponse> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     const systemPrompt = buildSystemPrompt(iocContext);
 
@@ -334,7 +354,8 @@ async function sendOllamaMessage(
     ];
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120_000); // 2-minute timeout
+    // Keep the request deadline active through both success and error bodies.
+    timeout = setTimeout(() => controller.abort(), OLLAMA_GENERATION_TIMEOUT_MS);
 
     const response = await fetch(`${ollamaUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -347,8 +368,6 @@ async function sendOllamaMessage(
       }),
       signal: controller.signal,
     });
-
-    clearTimeout(timeout);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -372,6 +391,8 @@ async function sendOllamaMessage(
     }
     const msg = error instanceof Error ? error.message : 'Unknown error';
     return { success: false, error: `Ollama connection failed: ${msg}. Is Ollama running?` };
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 

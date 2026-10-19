@@ -1,1 +1,10 @@
-{"compilerOptions":{"target":"ESNext","module":"ESNext","moduleResolution":"bundler","strict":true,"types":["bun-types"]}}
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "types": ["bun-types"]
+  },
+  "include": ["src/**/*.ts", "test-fixtures/**/*.ts"]
+}

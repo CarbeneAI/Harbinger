@@ -154,6 +154,11 @@ When you select an IOC and use the chat panel:
 | **Speed** | Fast | Depends on hardware |
 | **Cost** | API usage fees | Free |
 
+Ollama model discovery has a 30-second request deadline. Chat generation retains
+its 2-minute deadline through response-body reads. The bounds cover asynchronous
+network reads; synchronous JSON parsing is not preempted. See [Ollama request
+deadlines](docs/ollama-request-deadlines.md) for behavior and test limits.
+
 ## Threat Intelligence Feeds
 
 | Feed | Type | IOCs | Update Frequency |
