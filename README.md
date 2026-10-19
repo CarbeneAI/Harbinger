@@ -102,6 +102,21 @@ ABUSE_CH_AUTH_KEY=your-key-here
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
+Optional Wazuh inventory lookups use the Dashboard console proxy to query
+`wazuh-states-vulnerabilities*`. Configure a dedicated account when enabling them:
+
+```dotenv
+WAZUH_DASHBOARD_URL=https://your-wazuh-host
+WAZUH_DASHBOARD_USER=inventory-reader
+WAZUH_DASHBOARD_PASSWORD=replace-with-inventory-reader-password
+```
+
+`inventory-reader` is an example account name that must be provisioned, not a
+built-in user. Use a least-privileged account with console-proxy access to query
+the index above, and supply that account's password. If the username is unset,
+the runtime retains `admin` as its existing compatibility fallback. Follow
+[Wazuh HTTPS trust](docs/wazuh-tls.md) for certificate configuration.
+
 ### 3. Install dependencies
 
 ```bash
@@ -243,6 +258,11 @@ Enrichment tools forward IOC values (IPs, domains, URLs, hashes, CVE IDs) to thi
 | GET | `/settings/ollama-models` | List available Ollama models |
 
 ## Manage Script
+
+For the optional Wazuh inventory connection, see [Wazuh HTTPS trust](docs/wazuh-tls.md)
+before starting. Certificate and hostname verification are enabled by default;
+private deployments can configure a CA certificate bundle without weakening
+other outbound connections.
 
 ```bash
 ./manage.sh start    # Start server + client
