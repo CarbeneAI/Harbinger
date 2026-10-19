@@ -266,7 +266,7 @@ async function buildCveBlock(iocs: IOC[]): Promise<string> {
         '', '> **Present in the environment.** Not in KEV, so schedule rather than ' +
           'emergency-patch, weighted by the EPSS score above.',
       );
-    } else if (exposure && !exposure.present && sig?.inKev) {
+    } else if (exposure && !exposure.error && !exposure.present && sig?.inKev) {
       sections.push(
         '', '> **Not in the environment.** In KEV, so worth a detection rule and ' +
           'a watch, but there is nothing here to patch.',
