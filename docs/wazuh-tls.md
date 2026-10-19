@@ -17,7 +17,12 @@ WAZUH_DASHBOARD_PASSWORD=replace-with-your-local-secret
 WAZUH_CA_FILE=/absolute/path/to/wazuh-ca.pem
 ```
 
-Use the least-privileged Wazuh account that can query the vulnerability inventory.
+`inventory-reader` is an example account name, not a built-in or automatically
+created user. Provision it or choose a least-privileged account with Dashboard
+console-proxy access to query `wazuh-states-vulnerabilities*`, the index pattern
+used by the inventory client. Set `WAZUH_DASHBOARD_PASSWORD` to that configured
+account's password. If `WAZUH_DASHBOARD_USER` is unset, the runtime retains
+`admin` as its existing compatibility fallback.
 Obtain the CA certificate through a trusted channel and check its fingerprint
 with the administrator. The file contains public CA certificates, never private
 keys. It must be a readable PEM bundle containing only CA certificates and
