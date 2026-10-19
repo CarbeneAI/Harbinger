@@ -8,6 +8,10 @@ import { startFeedScheduler, pollAllFeeds } from './feeds';
 import { sendChatMessage, generateThreatBrief, generateDailyThreatBrief, generateWeeklyStrategicBrief, getOllamaModels, QUICK_PROMPTS } from './ai-client';
 import { getWazuhStatus } from './wazuh-client';
 import { getExploitSignalStatus } from './exploit-signal';
+import { readNetworkPolicy, requestIsAllowed } from './network-policy';
+
+// Validate configuration before starting persistent services.
+const networkPolicy = readNetworkPolicy();
 
 // Initialize database
 const db = initDB();
@@ -15,15 +19,11 @@ const db = initDB();
 // Start feed polling
 startFeedScheduler();
 
-// Allowed origin — must match the Vite client's production domain.
-// Specific origin required when credentials:include is used on the client.
-const ALLOWED_ORIGIN = 'https://harbinger.home.carbeneai.com';
-
 // Build CORS headers for a given request origin.
 // Vary: Origin tells caches that responses differ by origin.
 function corsHeaders(origin: string | null): Record<string, string> {
   return {
-    'Access-Control-Allow-Origin': origin === ALLOWED_ORIGIN ? ALLOWED_ORIGIN : ALLOWED_ORIGIN,
+    ...(origin === networkPolicy.allowedOrigin ? { 'Access-Control-Allow-Origin': networkPolicy.allowedOrigin } : {}),
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Allow-Credentials': 'true',
@@ -38,18 +38,26 @@ function json(data: unknown, status = 200, origin: string | null = null) {
   });
 }
 
-const server = Bun.serve({
+export const server = Bun.serve({
   port: parseInt(process.env.PORT || '4001'),
+  hostname: networkPolicy.hostname,
 
   async fetch(req: Request) {
+    // CORS response headers alone do not prevent a browser from sending a simple
+    // request. Reject it before parsing bodies, polling feeds, or invoking models.
+    if (!requestIsAllowed(req, networkPolicy)) {
+      return new Response('Request origin or host is not allowed', {
+        status: 403, headers: { 'Vary': 'Origin' },
+      });
+    }
     const url = new URL(req.url);
     const path = url.pathname;
     const origin = req.headers.get('Origin');
 
-    // Log authenticated user from Authentik forward-auth headers (injected by Traefik).
-    // Traefik strips any forged X-Authentik-* before this point.
+    // These headers are informational, not authentication. A separately configured
+    // trusted proxy must strip client-supplied identity headers and authenticate users.
     const akUser = req.headers.get('X-Authentik-Email') || req.headers.get('X-Authentik-Username') || '<unauthenticated>';
-    console.log(`[req] ${req.method} ${path} user=${akUser}`);
+    console.log(`[req] ${req.method} ${path} reported_user=${akUser}`);
 
     // Request-scoped json helper — captures origin so every response gets correct CORS.
     const respond = (data: unknown, status = 200) => json(data, status, origin);
@@ -234,6 +242,6 @@ const server = Bun.serve({
   },
 });
 
-console.log(`Harbinger Server running on http://localhost:${server.port}`);
-console.log(`Health check: http://localhost:${server.port}/health`);
+console.log(`Harbinger Server running on ${server.url}`);
+console.log(`Allowed browser origin: ${networkPolicy.allowedOrigin}`);
 console.log(`Feeds: ${getFeeds().length} configured`);
