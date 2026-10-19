@@ -272,6 +272,10 @@ Enrichment tools forward IOC values (IPs, domains, URLs, hashes, CVE IDs) to thi
 
 Pull requests welcome. Please open an issue first to discuss major changes.
 
+For client changes, run both the Vue typecheck and the production build. See
+[client validation](docs/client-validation.md) for the commands, CI coverage,
+and feed poll timestamp semantics.
+
 ## License
 
 MIT — see [LICENSE](LICENSE)

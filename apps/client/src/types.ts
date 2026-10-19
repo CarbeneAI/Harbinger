@@ -21,7 +21,7 @@ export interface Feed {
   id: number;
   name: FeedName;
   url: string;
-  last_poll?: number;
+  last_poll?: number | null;
   last_count: number;
   status: 'ok' | 'error' | 'pending';
   error_msg?: string;
