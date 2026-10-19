@@ -216,12 +216,16 @@ If you need raw (non-defanged) URLs for a specific use case (e.g. piping into au
 The default Claude CLI path calls [`buildPrefetchedContext`](apps/server/src/prefetch.ts) before analysis. It gathers related local IOCs and enriches up to five unique CVE IDs with:
 
 - **Environment exposure:** optional read-only searches of `wazuh-states-vulnerabilities*` through the Wazuh Dashboard proxy. Set both `WAZUH_DASHBOARD_URL` and `WAZUH_DASHBOARD_PASSWORD`; the user defaults to `admin`.
-- **Known exploitation:** the CISA KEV catalog, cached for six hours.
+- **Known exploitation:** the CISA KEV catalog, cached for six hours. Signals carry `kevState` (`available`, `stale`, or `unavailable`) and, after a successful fetch, `kevCachedAt`. Only a validated catalog within that cache window supports a current membership result.
 - **Exploitation probability:** FIRST.org EPSS scores queried by CVE ID.
 
 An unconfigured Wazuh connection is reported as **not checked**. A failed lookup is **unknown**, with a lookup-failed warning; it must not become a claim that the CVE is absent. A successful zero-result query means no affected package was found in Wazuh's monitored inventory, not proof about unmonitored systems.
 
 HTTP 200 alone is not evidence of a complete search. Harbinger checks search completion, shard success, exact CVE hit counts, result structure, and required aggregations before using inventory results. Timeouts, partial shard results, malformed responses, and lower-bound CVE counts remain unknown. CVE lookups request exact totals with `track_total_hits: true`; at most 12 instance samples are returned. Legacy integer totals are also accepted. Health and brief-summary responses validate their own required aggregates instead of treating missing values as zero.
+
+KEV responses must contain valid catalog metadata, an explicit count matching the complete vulnerability array, unique CVE identifiers, and correctly typed fields consumed by Harbinger. A malformed later row rejects the whole refresh before replacing the cache. These checks cover the consumed contract, not every field in the CISA schema. Failed fetches and invalid catalogs use fixed diagnostics without echoing rejected provider content.
+
+A stale positive is labeled as previously listed; stale misses and unavailable lookups remain unknown. Analyst priority uses current KEV membership only. Even a current negative result does not justify lowering patch priority by itself: severity, exposure, and other evidence still matter. The six-hour cache window describes when Harbinger fetched the catalog, not a guarantee that exploitation has stopped or that the publisher is current.
 
 The `anthropic` and `ollama` chat paths do not run this prefetch step. The former `cve-mcp` integration and its `CVE_MCP_*` settings have been removed. Harbinger no longer exposes its former IP, domain, URL, or hash enrichment tools.
 
@@ -229,7 +233,7 @@ The `anthropic` and `ollama` chat paths do not run this prefetch step. The forme
 
 Harbinger downloads the public KEV catalog and sends CVE IDs to FIRST.org. Wazuh host/package data is gathered from your configured Dashboard and can be included in the prompt sent to the selected analysis backend. These are separate data flows: public CVE queries do not make an AI prompt containing inventory data public-safe.
 
-`GET /enrichment/status` checks Wazuh configuration/connectivity and KEV catalog availability. It can contact live services; it is not an offline readiness test. KEV can fall back to cached data on fetch failure, so consult logs and source freshness before relying on a negative result. CI does not validate live Wazuh, feed availability, SSH, or model responses.
+`GET /enrichment/status` checks Wazuh configuration/connectivity and KEV catalog availability. It can contact live services; it is not an offline readiness test. The KEV health result includes `kevState`, `kevEntries`, and `cachedAt`; `connected` means the KEV catalog is available within its cache window, not that EPSS was checked. An expired cache after a failed refresh is stale and disconnected, with its original count and timestamp retained. A valid empty catalog is available; an unavailable lookup is not an empty catalog. CI does not validate live Wazuh, feed availability, SSH, or model responses.
 
 ## API Reference
 

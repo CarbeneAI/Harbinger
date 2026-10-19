@@ -5,7 +5,8 @@ This is a contributor proposal for maintainer discussion, not an adopted release
 ## Baseline in this contribution
 
 - Preserve the distinction between a failed Wazuh lookup and confirmed CVE absence in analysis context.
-- Cover failed, absent, present, and unconfigured exposure through the production context builder with mocked sources.
+- Cover failed, absent, present, and unconfigured exposure through the production context builder with isolated sources.
+- Preserve available, stale, and unavailable KEV states through the real signal producer, formatter, health response, and analyst context. Validate consumed catalog fields before cache promotion; retain old timestamps after failed refreshes.
 - Validate completed Wazuh searches, exact CVE counts, and required aggregates through offline HTTP fixtures; partial or malformed responses remain unknown.
 - Document current provider routing, CVE prefetch, and external data flows.
 - Run server tests/typechecking and the client build in CI with frozen dependency installs.
@@ -16,7 +17,7 @@ Current offline commands and limitations are in the [contributor guide](README.m
 
 Problem: unavailable or stale external evidence must not become a confident absence claim.
 
-Proposed approach: extend the Wazuh response fixtures to additional sources and cache expiry, including interactions between partially available enrichment sources.
+Proposed approach: extend the Wazuh response fixtures to additional sources and cache expiry, including EPSS validation and interactions between partially available enrichment sources. KEV cache-state coverage is included in this contribution; full-body fetch deadlines, persistent source health, and cross-process cache coordination remain separate follow-ups.
 
 Acceptance criteria:
 

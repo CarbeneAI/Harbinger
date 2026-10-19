@@ -242,17 +242,19 @@ async function buildCveBlock(iocs: IOC[]): Promise<string> {
     // The prioritisation call, stated explicitly so the model does not have to
     // infer it (and cannot get it backwards).
     // Failed Wazuh lookups carry present:false, so absence also requires no error.
-    if (exposure?.present && sig?.inKev) {
+    const kevAvailable = sig?.kevState === 'available';
+    if (exposure?.present && kevAvailable && sig?.inKev) {
       sections.push(
         '', '> **PRIORITY: PATCH NOW.** Present in the environment AND in CISA KEV ' +
           '(confirmed exploitation in the wild).',
       );
     } else if (exposure?.present) {
       sections.push(
-        '', '> **Present in the environment.** Not in KEV, so schedule rather than ' +
-          'emergency-patch, weighted by the EPSS score above.',
+        '', '> **Present in the environment.** ' + (kevAvailable
+          ? 'Not listed in the available KEV catalog. Assess severity, exposure and EPSS; catalog absence alone does not justify a lower patch priority.'
+          : 'Current exploitation evidence from KEV is unavailable. Assess severity and exposure without inferring a negative KEV result.'),
       );
-    } else if (exposure && !exposure.error && !exposure.present && sig?.inKev) {
+    } else if (exposure && !exposure.error && !exposure.present && kevAvailable && sig?.inKev) {
       sections.push(
         '', '> **Not in the environment.** In KEV, so worth a detection rule and ' +
           'a watch, but there is nothing here to patch.',

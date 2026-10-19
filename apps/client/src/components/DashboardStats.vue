@@ -306,7 +306,7 @@ function getSeverityCount(severity: SeverityLevel): number {
           </ul>
         </div>
         <div v-else>
-          <div class="text-severity-critical mb-1 font-mono">✗ Unreachable</div>
+          <div class="text-severity-critical mb-1 font-mono">✗ Unavailable or stale</div>
           <div v-if="popover.status.exploit.lastError" class="text-text-tertiary break-words">{{ popover.status.exploit.lastError }}</div>
         </div>
       </template>

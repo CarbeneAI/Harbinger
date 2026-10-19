@@ -29,7 +29,7 @@ describe('CVE exposure recommendations', () => {
       instances: [],
     });
     spyOn(exploitSignal, 'getExploitSignals').mockResolvedValue(new Map([
-      [cve, { cveId: cve, inKev: true, kev: { cveId: cve, dateAdded: '2021-12-10' } }],
+      [cve, { cveId: cve, kevState: 'available', inKev: true, kev: { cveId: cve, dateAdded: '2021-12-10' } }],
     ]));
     spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected network request'));
   });
